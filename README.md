@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 SMARTPACT
 
 SmartPact is a blockchain-powered contract management platform that facilitates freelancer-client agreements, rental agreements, and subscription services using smart contracts. The platform ensures secure, transparent, and trustless transactions through Web3 integration.
@@ -40,4 +39,3 @@ zkSync Era (Layer 2 for lower gas fees)
 Web3.py (Interaction with blockchain)
 
 Foundry (Smart contract development and testing)
->>>>>>> 3480132 (readme file added)
