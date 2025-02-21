@@ -1,0 +1,5 @@
+{
+  "dependencies": {
+    "@web3auth/base": "^9.6.0"
+  }
+}
