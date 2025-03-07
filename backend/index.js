@@ -6,20 +6,27 @@ const cors = require("cors");
 const { Web3Auth } = require("@web3auth/single-factor-auth");
 const { CHAIN_NAMESPACES } = require("@web3auth/base");
 const { EthereumPrivateKeyProvider } = require("@web3auth/ethereum-provider");
+const connectDB = require("./db"); // Import Mongoose connection
+const User = require("./models/User");
 
 
 const app = express();
 app.use(express.json());
 app.use(cors());
+const PORT = process.env.PORT || 5000;
+connectDB().then(() => {
+    app.listen(PORT, () => {
+      console.log("Server running on port 5000");
+    });
+  });
+  
 
 app.get("/", (req, res) => {
     res.send("Web3Auth backend is running");
 });
 
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-    console.log("Server running on port 5000");
-});
+
+
 
 const clientId = process.env.WEB3AUTH_CLIENT_ID;
 
@@ -107,7 +114,19 @@ app.post("/login", async (req, res) => {
             }
             
             const balance = await web3.eth.getBalance(accounts[0]);
-            console.log("Balance:", web3.utils.fromWei(balance, "ether"), "ETH");
+            const walletAddress=accounts[0];
+
+            let existingUser = await User.findOne({ email });
+
+            if (existingUser) {
+            console.log("User already exists:", existingUser);
+            const user=existingUser;
+            }
+            else{
+                const user = new User({ email, walletAddress });
+                await user.save();
+            }
+            console.log("Balance:", web3.utils.fromWei(balance, "ether"), "ETH ","wallet-address: ",walletAddress);
         } catch (err) {
             console.error("Error getting balance:", err);
         }
@@ -123,3 +142,4 @@ app.post("/login", async (req, res) => {
         res.status(500).json({ error: "Internal server error" });
     }
 });
+
