@@ -6,27 +6,33 @@ const cors = require("cors");
 const { Web3Auth } = require("@web3auth/single-factor-auth");
 const { CHAIN_NAMESPACES } = require("@web3auth/base");
 const { EthereumPrivateKeyProvider } = require("@web3auth/ethereum-provider");
-const connectDB = require("./db"); // Import Mongoose connection
+const connectDB = require("./config/db"); // Import Mongoose connection
 const User = require("./models/User");
-
+const agreementRoutes = require('./routes/agreementRoutes');
 
 const app = express();
 app.use(express.json());
 app.use(cors());
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 5001;
 connectDB().then(() => {
     app.listen(PORT, () => {
-      console.log("Server running on port 5000");
+        console.log("Server running on port 5001");
     });
-  });
-  
+});
+module.exports = app;
+
 
 app.get("/", (req, res) => {
     res.send("Web3Auth backend is running");
 });
 
+app.use('/api/agreements', agreementRoutes);
 
-
+// Error handling middleware
+app.use((err, req, res, next) => {
+    console.error(err.stack);
+    res.status(500).send('Something broke!');
+});
 
 const clientId = process.env.WEB3AUTH_CLIENT_ID;
 
@@ -72,6 +78,7 @@ const parseToken = (token) => {
 };
 
 // Handle user login
+let flag = 0 //to check for connection
 app.post("/login", async (req, res) => {
     try {
         const { idToken } = req.body; // Assume the frontend sends the ID token
@@ -95,51 +102,61 @@ app.post("/login", async (req, res) => {
         const { Web3 } = require('web3');
         const provider = await web3authSfa.provider;
         if (!provider) {
-        throw new Error("Provider not initialized");
+            throw new Error("Provider not initialized");
         }
         const web3 = new Web3(provider);
-        
-        
+
         const getBalance = async () => {
-        try {
-            if (!web3) {
-            console.log("Web3 is not initialized yet");
-            return;
-            }
+            try {
+                if (!web3) {
+                    console.log("Web3 is not initialized yet");
+                    return;
+                }
 
-            const accounts = await web3.eth.getAccounts();
-            if (accounts.length === 0) {
-            console.log("No accounts found. Make sure your provider is connected.");
-            return;
-            }
-            
-            const balance = await web3.eth.getBalance(accounts[0]);
-            const walletAddress=accounts[0];
+                const accounts = await web3.eth.getAccounts();
+                if (accounts.length === 0) {
+                    console.log("No accounts found. Make sure your provider is connected.");
+                    return;
+                }
 
-            let existingUser = await User.findOne({ email });
+                const balance = await web3.eth.getBalance(accounts[0]);
+                const walletAddress = accounts[0];
 
-            if (existingUser) {
-            console.log("User already exists:", existingUser);
-            const user=existingUser;
+                let existingUser = await User.findOne({ email });
+
+                if (existingUser) {
+                    flag = 1
+                    console.log("User already exists:", existingUser);
+                    const user = existingUser;
+                }
+                else {
+                    const user = new User({ email, walletAddress });
+                    await user.save();
+                }
+                console.log("Balance:", web3.utils.fromWei(balance, "ether"), "ETH ", "wallet-address: ", walletAddress);
+            } catch (err) {
+                console.error("Error getting balance:", err);
             }
-            else{
-                const user = new User({ email, walletAddress });
-                await user.save();
-            }
-            console.log("Balance:", web3.utils.fromWei(balance, "ether"), "ETH ","wallet-address: ",walletAddress);
-        } catch (err) {
-            console.error("Error getting balance:", err);
-        }
         };
         getBalance();
-        
-        
+
+
 
         // Return success response
-        res.status(200).json({ message: "Login successful", email});
+        if (flag) {
+            res.status(200).json({ message: "Login successful", email });
+        }
+        else if (!flag) {
+            res.status(200).json({ message: "Successfully created account", email });
+        }
     } catch (err) {
-        console.error("Error during login:", err);
-        res.status(500).json({ error: "Internal server error" });
+        if (flag) {
+            console.log("Signed in and connected")
+        }
+        else if (!flag) {
+            console.error("Error during login:", err);
+            res.status(500).json({ error: "Internal server error" });
+        }
     }
 });
 
