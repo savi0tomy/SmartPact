@@ -9,7 +9,7 @@ const { EthereumPrivateKeyProvider } = require("@web3auth/ethereum-provider");
 const connectDB = require("./config/db"); // Import Mongoose connection
 const User = require("./models/User");
 const agreementRoutes = require('./routes/agreementRoutes');
-
+const {encrypt, decrypt} =require("./utils/encryption")
 const app = express();
 app.use(express.json());
 app.use(cors());
@@ -27,6 +27,9 @@ app.get("/", (req, res) => {
 });
 
 app.use('/api/agreements', agreementRoutes);
+
+const userRoutes = require("./routes/userRoutes");
+app.use("/users", userRoutes);
 
 // Error handling middleware
 app.use((err, req, res, next) => {
@@ -65,7 +68,7 @@ const web3authSfa = new Web3Auth({
 web3authSfa.init(privateKeyProvider);
 
 // Parse JWT token to extract user information
-const parseToken = (token) => {
+/*const parseToken = (token) => {
     try {
         const base64Url = token.split(".")[1]; // Get the payload part of the token
         const base64 = base64Url.replace(/-/g, "+").replace(/_/g, "/");
@@ -75,23 +78,39 @@ const parseToken = (token) => {
         console.error("Error parsing token:", err);
         return null;
     }
-};
+};*/
+
+const jwt = require("jsonwebtoken");
+
+function parseToken(token) {
+    try {
+        const decoded = jwt.decode(token);
+        return {
+            email: decoded.email,
+            name: decoded.name // Extract name from the token
+        };
+    } catch (error) {
+        console.error("Error parsing token:", error);
+        return {};
+    }
+}
+
 
 // Handle user login
 app.post("/login", async (req, res) => {
     try {
-        const { idToken } = req.body; // Assume the frontend sends the ID token
+        const { idToken } = req.body;
         if (!idToken) {
             return res.status(400).json({ error: "ID token is required" });
         }
 
-        // Parse the token to get user email
-        const { email } = parseToken(idToken);
-        if (!email) {
+        // Parse token to get user details
+        const { email, name } = parseToken(idToken);
+        if (!email || !name) {
             return res.status(400).json({ error: "Invalid ID token" });
         }
 
-        // Connect the user to Web3Auth
+        // Web3Auth authentication
         await web3authSfa.connect({
             verifier: "google-auth-web3auth",
             verifierId: email,
@@ -104,23 +123,22 @@ app.post("/login", async (req, res) => {
             throw new Error("Provider not initialized");
         }
         const web3 = new Web3(provider);
-
         const accounts = await web3.eth.getAccounts();
         if (accounts.length === 0) {
             return res.status(400).json({ error: "No accounts found" });
         }
 
-        const balance = await web3.eth.getBalance(accounts[0]);
         const walletAddress = accounts[0];
-
+        const encryptedName = encrypt(name); // Encrypt user name
+        const encryptedWallet = encrypt(walletAddress);
         let existingUser = await User.findOne({ email });
         if (existingUser) {
             console.log("User already exists:", existingUser);
             return res.status(200).json({ message: "Login successful", email });
         } else {
-            const user = new User({ email, walletAddress });
+            const user = new User({ email, walletAddress:encryptedWallet, name: encryptedName });
             await user.save();
-            console.log("Balance:", web3.utils.fromWei(balance, "ether"), "ETH ", "wallet-address: ", walletAddress);
+            console.log("New user created:", user);
             return res.status(200).json({ message: "Successfully created account", email });
         }
     } catch (err) {
@@ -128,3 +146,5 @@ app.post("/login", async (req, res) => {
         res.status(500).json({ error: "Internal server error" });
     }
 });
+
+module.exports = app;

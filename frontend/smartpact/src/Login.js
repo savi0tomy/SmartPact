@@ -73,6 +73,11 @@ const Login = () => {
             maxWidth: "500px",
           }}
         >
+          <img
+            src="/Screenshot 2025-03-19 214217.png"
+            alt="Illustration"
+            style={{ width: "30%", borderRadius: "20px", boxShadow: "0 4px 15px rgba(0, 0, 0, 0.2)" }}
+          />
           <h1
             style={{
               fontSize: "3rem",
@@ -92,11 +97,7 @@ const Login = () => {
           >
             Securely log in with Google to access your account.
           </p>
-          <img
-            src="https://via.placeholder.com/400x300"
-            alt="Illustration"
-            style={{ width: "100%", borderRadius: "10px", boxShadow: "0 4px 15px rgba(0, 0, 0, 0.2)" }}
-          />
+          
         </div>
       </div>
 
@@ -129,7 +130,7 @@ const Login = () => {
           >
             Log in
           </h2>
-          <div style={{ display: "flex", justifyContent: "center" }}>
+          <div style={{ display: "flex", justifyContent: "center", color:"black", fontFamily:"monospace",fontSize:"20px"}}>
             {isLoggingIn ? (
               <p>Logging in...</p>
             ) : (
