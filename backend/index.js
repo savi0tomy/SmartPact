@@ -78,7 +78,6 @@ const parseToken = (token) => {
 };
 
 // Handle user login
-let flag = 0 //to check for connection
 app.post("/login", async (req, res) => {
     try {
         const { idToken } = req.body; // Assume the frontend sends the ID token
@@ -106,57 +105,26 @@ app.post("/login", async (req, res) => {
         }
         const web3 = new Web3(provider);
 
-        const getBalance = async () => {
-            try {
-                if (!web3) {
-                    console.log("Web3 is not initialized yet");
-                    return;
-                }
-
-                const accounts = await web3.eth.getAccounts();
-                if (accounts.length === 0) {
-                    console.log("No accounts found. Make sure your provider is connected.");
-                    return;
-                }
-
-                const balance = await web3.eth.getBalance(accounts[0]);
-                const walletAddress = accounts[0];
-
-                let existingUser = await User.findOne({ email });
-
-                if (existingUser) {
-                    flag = 1
-                    console.log("User already exists:", existingUser);
-                    const user = existingUser;
-                }
-                else {
-                    const user = new User({ email, walletAddress });
-                    await user.save();
-                }
-                console.log("Balance:", web3.utils.fromWei(balance, "ether"), "ETH ", "wallet-address: ", walletAddress);
-            } catch (err) {
-                console.error("Error getting balance:", err);
-            }
-        };
-        getBalance();
-
-
-
-        // Return success response
-        if (flag) {
-            res.status(200).json({ message: "Login successful", email });
+        const accounts = await web3.eth.getAccounts();
+        if (accounts.length === 0) {
+            return res.status(400).json({ error: "No accounts found" });
         }
-        else if (!flag) {
-            res.status(200).json({ message: "Successfully created account", email });
+
+        const balance = await web3.eth.getBalance(accounts[0]);
+        const walletAddress = accounts[0];
+
+        let existingUser = await User.findOne({ email });
+        if (existingUser) {
+            console.log("User already exists:", existingUser);
+            return res.status(200).json({ message: "Login successful", email });
+        } else {
+            const user = new User({ email, walletAddress });
+            await user.save();
+            console.log("Balance:", web3.utils.fromWei(balance, "ether"), "ETH ", "wallet-address: ", walletAddress);
+            return res.status(200).json({ message: "Successfully created account", email });
         }
     } catch (err) {
-        if (flag) {
-            console.log("Signed in and connected")
-        }
-        else if (!flag) {
-            console.error("Error during login:", err);
-            res.status(500).json({ error: "Internal server error" });
-        }
+        console.error("Error during login:", err);
+        res.status(500).json({ error: "Internal server error" });
     }
 });
-
