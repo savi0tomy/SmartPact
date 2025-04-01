@@ -14,6 +14,7 @@ exports.getUserById = async (req, res) => {
         const decryptedWallet = user.walletAddress ? decrypt(user.walletAddress) : null;
 
         res.status(200).json({
+            id:user.id,
             email: user.email,
             walletAddress: decryptedWallet,
             name: decryptedName, // Send decrypted name

@@ -1,33 +1,69 @@
+// models/Agreement.js
 const mongoose = require('mongoose');
-const crypto = require('crypto');
 
 const AgreementSchema = new mongoose.Schema({
-  templateType: {
+
+  title: {
     type: String,
-    enum: ['software-freelancing', 'rental', 'subscription'],
     required: true
   },
-  agreementData: {
-    type: mongoose.Schema.Types.Mixed,
+  type: {
+    type: String,
+    required: true,
+    enum: ['Software Freelancing', 'Subscription Agreement', 'Rental Agreement']
+  },
+  creator: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
     required: true
+  },
+  counterparty: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+  },
+  counterpartyAddress: {
+    type: String,
+    required: false
+  },
+  amount: {
+    type: String,
+    required: true
+  },
+  startDate: {
+    type: Date,
+    required: true
+  },
+  dueDate: {
+    type: Date,
+    required: true
+  },
+  terms: {
+    type: String
+  },
+  status: {
+    type: String,
+    required: true,
+    enum: ['Created', 'Funded', 'Completed', 'Cancelled', 'Disputed'],
+    default: 'Created'
+  },
+  txHash: {
+    type: String,
+    required: false
+  },
+  fundTxHash: {
+    type: String
   },
   createdAt: {
     type: Date,
     default: Date.now
   },
-  user1id: {
-    type: String, 
-    required: true
+  fundedAt: {
+    type: Date
   },
-  user2id: {
-    type: String, 
-    required: true
-  },
-  status: {
-    type: String,
-    enum: ['draft', 'active', 'completed', 'terminated'],
-    default: 'draft'
-  },
+  completedAt: {
+    type: Date
+  }
 });
 
 module.exports = mongoose.model('Agreement', AgreementSchema);

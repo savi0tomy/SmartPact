@@ -1,6 +1,7 @@
 require("dotenv").config();
 console.log("Client ID:", process.env.WEB3AUTH_CLIENT_ID);
 global.crypto = require("crypto");
+const session = require('express-session');
 const express = require("express");
 const cors = require("cors");
 const { Web3Auth } = require("@web3auth/single-factor-auth");
@@ -9,24 +10,86 @@ const { EthereumPrivateKeyProvider } = require("@web3auth/ethereum-provider");
 const connectDB = require("./config/db"); // Import Mongoose connection
 const User = require("./models/User");
 const agreementRoutes = require('./routes/agreementRoutes');
-const {encrypt, decrypt} =require("./utils/encryption")
+const {encrypt, decrypt} = require("./utils/encryption");
 const app = express();
 app.use(express.json());
-app.use(cors());
-const PORT = process.env.PORT || 5001;
-connectDB().then(() => {
-    app.listen(PORT, () => {
-        console.log("Server running on port 5001");
-    });
-});
-module.exports = app;
+const cookieParser = require('cookie-parser');
 
+app.use(cors({
+    origin: 'http://localhost:3000', // Your frontend URL
+    credentials: true // Required for cookies/sessions
+}));
+
+app.use(session({
+    secret: process.env.SESSION_SECRET || 'your-secret-key',
+    resave: true,  // Ensure session is saved
+    saveUninitialized: true, // Ensure session is initialized
+    cookie: { 
+        secure: false, // Set to true only in production with HTTPS
+        httpOnly: true,
+        sameSite: 'lax',
+        maxAge: 24 * 60 * 60 * 1000
+    }
+}));
+
+// Add these middleware BEFORE your routes
+app.use(cookieParser());
+
+// Authentication middleware
+const requireAuth = async (req, res, next) => {
+    if (!req.session.userId) {
+        return res.status(401).json({ 
+            success: false,
+            message: 'Not authenticated - please login first' 
+        });
+    }
+    
+    try {
+        // Get user from database
+        const user = await User.findById(req.session.userId);
+        if (!user) {
+            return res.status(401).json({
+                success: false,
+                message: 'User not found'
+            });
+        }
+        
+        // Add user info to req object
+        req.user = {
+            userId: user._id,
+            email: user.email,
+            walletAddress: decrypt(user.walletAddress)
+        };
+        
+        next();
+    } catch (error) {
+        console.error("Auth middleware error:", error);
+        res.status(500).json({
+            success: false,
+            message: 'Authentication error'
+        });
+    }
+};
+
+// Check authentication status endpoint
+app.get("/check-auth", (req, res) => {
+    if (req.session.userId) {
+        res.json({ authenticated: true });
+    } else {
+        res.json({ authenticated: false });
+    }
+});
+
+app.get("/debug-session", (req, res) => {
+    res.json({ session: req.session });
+});
 
 app.get("/", (req, res) => {
     res.send("Web3Auth backend is running");
 });
 
-app.use('/api/agreements', agreementRoutes);
+// Apply authentication middleware to protected routes
+app.use('/api/agreements', requireAuth, agreementRoutes);
 
 const userRoutes = require("./routes/userRoutes");
 app.use("/users", userRoutes);
@@ -67,19 +130,6 @@ const web3authSfa = new Web3Auth({
 // Initialize Web3Auth with the private key provider
 web3authSfa.init(privateKeyProvider);
 
-// Parse JWT token to extract user information
-/*const parseToken = (token) => {
-    try {
-        const base64Url = token.split(".")[1]; // Get the payload part of the token
-        const base64 = base64Url.replace(/-/g, "+").replace(/_/g, "/");
-        const payload = JSON.parse(Buffer.from(base64, "base64").toString());
-        return payload;
-    } catch (err) {
-        console.error("Error parsing token:", err);
-        return null;
-    }
-};*/
-
 const jwt = require("jsonwebtoken");
 
 function parseToken(token) {
@@ -94,7 +144,6 @@ function parseToken(token) {
         return {};
     }
 }
-
 
 // Handle user login
 app.post("/login", async (req, res) => {
@@ -117,11 +166,12 @@ app.post("/login", async (req, res) => {
             idToken: idToken,
         });
 
-        const { Web3 } = require('web3');
         const provider = await web3authSfa.provider;
         if (!provider) {
             throw new Error("Provider not initialized");
         }
+        
+        const { Web3 } = require('web3');
         const web3 = new Web3(provider);
         const accounts = await web3.eth.getAccounts();
         if (accounts.length === 0) {
@@ -131,20 +181,51 @@ app.post("/login", async (req, res) => {
         const walletAddress = accounts[0];
         const encryptedName = encrypt(name); // Encrypt user name
         const encryptedWallet = encrypt(walletAddress);
-        let existingUser = await User.findOne({ email });
-        if (existingUser) {
-            console.log("User already exists:", existingUser);
-            return res.status(200).json({ message: "Login successful", email });
-        } else {
-            const user = new User({ email, walletAddress:encryptedWallet, name: encryptedName });
+
+        const balance = await web3.eth.getBalance(accounts[0]);
+        console.log(balance);
+
+        let user = await User.findOne({ email });
+        if (!user) {
+            // Create new user
+            user = new User({ email, walletAddress: encryptedWallet, name: encryptedName });
             await user.save();
             console.log("New user created:", user);
-            return res.status(200).json({ message: "Successfully created account", email });
         }
+        
+        // Store user ID in session for authentication
+        req.session.userId = user._id;
+        
+        // Save RPC endpoint in session for recreating provider later
+        req.session.rpcEndpoint = chainConfig.rpcTarget;
+        
+        return res.status(200).json({ 
+            message: user ? "Login successful" : "Successfully created account", 
+            email, 
+            walletAddress,
+            userId: user._id
+        });
     } catch (err) {
         console.error("Error during login:", err);
         res.status(500).json({ error: "Internal server error" });
     }
+});
+
+// Logout endpoint
+app.post('/logout', (req, res) => {
+    req.session.destroy((err) => {
+        if (err) {
+            return res.status(500).json({ success: false, message: 'Logout failed' });
+        }
+        res.json({ success: true, message: 'Logged out successfully' });
+    });
+});
+
+const PORT = process.env.PORT || 5001;
+connectDB().then(() => {
+    app.listen(PORT, () => {
+        console.log("Server running on port 5001");
+    });
 });
 
 module.exports = app;
