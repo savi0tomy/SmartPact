@@ -14,7 +14,16 @@ const AgreementFlow = ({ onCreateAgreement, onCancel, userData }) => {
     startDate: "",
     dueDate: "",
     amount: "",
-    terms: ""
+    terms: "",
+    // Software Freelancing specific fields
+    deliverables: "",
+    milestones: "",
+    // Rental Agreement specific fields
+    propertyAddress: "",
+    securityDeposit: "",
+    // Subscription Agreement specific fields
+    subscriptionDetails: "",
+    billingInterval: "30", // Default to monthly (30 days)
   });
   const [walletAddresses, setWalletAddresses] = useState({
     creator: "",
@@ -109,10 +118,10 @@ const AgreementFlow = ({ onCreateAgreement, onCancel, userData }) => {
       setIsLoading(true);
       setError(null);
       
-      // Store agreement in database first
+      // Create payload based on agreement type
       const agreementPayload = {
         creatorId: userData.id,
-        counterpartyId: counterparty.id,
+        counterpartyid: counterparty.id,
         type: agreementType,
         title: details.title,
         startDate: details.startDate,
@@ -122,8 +131,22 @@ const AgreementFlow = ({ onCreateAgreement, onCancel, userData }) => {
         status: "Created",
         createdAt: new Date().toISOString()
       };
+      
+      // Add type-specific fields
+      if (agreementType === "Software Freelancing") {
+        agreementPayload.deliverables = details.deliverables;
+        agreementPayload.milestones = details.milestones;
+      } else if (agreementType === "Rental Agreement") {
+        agreementPayload.propertyAddress = details.propertyAddress;
+        agreementPayload.securityDeposit = details.securityDeposit;
+      } else if (agreementType === "Subscription Agreement") {
+        agreementPayload.subscriptionDetails = details.subscriptionDetails;
+        agreementPayload.billingInterval = parseInt(details.billingInterval) * 86400; // Convert days to seconds
+      }
+      
       console.log(agreementPayload);
       console.log(userData);
+      
       // Save to database
       const response = await axios.post('/api/agreements/create', agreementPayload);
       
@@ -341,7 +364,14 @@ const AgreementFlow = ({ onCreateAgreement, onCancel, userData }) => {
       startDate: "",
       dueDate: "",
       amount: "",
-      terms: ""
+      terms: "",
+      // Type-specific fields
+      deliverables: "",
+      milestones: "",
+      propertyAddress: "",
+      securityDeposit: "",
+      subscriptionDetails: "",
+      billingInterval: "30", // Default 30 days
     });
   
     useEffect(() => {
@@ -363,6 +393,98 @@ const AgreementFlow = ({ onCreateAgreement, onCancel, userData }) => {
       onSubmit(details);
     };
   
+    // Render different fields based on agreement type
+    const renderTypeSpecificFields = () => {
+      switch(agreementType) {
+        case "Software Freelancing":
+          return (
+            <>
+              <label style={styles.label}>Deliverables</label>
+              <textarea
+                name="deliverables"
+                value={details.deliverables}
+                onChange={handleChange}
+                style={styles.textarea}
+                placeholder="Specify the deliverables expected from the freelancer..."
+                rows="3"
+                required
+              />
+              
+              <label style={styles.label}>Milestones</label>
+              <textarea
+                name="milestones"
+                value={details.milestones}
+                onChange={handleChange}
+                style={styles.textarea}
+                placeholder="Define project milestones and timeline expectations..."
+                rows="3"
+              />
+            </>
+          );
+          
+        case "Rental Agreement":
+          return (
+            <>
+              <label style={styles.label}>Property Address</label>
+              <textarea
+                name="propertyAddress"
+                value={details.propertyAddress}
+                onChange={handleChange}
+                style={styles.textarea}
+                placeholder="Enter the full address of the rental property..."
+                rows="2"
+                required
+              />
+              
+              <label style={styles.label}>Security Deposit (ETH)</label>
+              <input
+                type="number"
+                name="securityDeposit"
+                value={details.securityDeposit}
+                onChange={handleChange}
+                style={styles.input}
+                step="0.0001"
+                min="0"
+                required
+              />
+            </>
+          );
+          
+        case "Subscription Agreement":
+          return (
+            <>
+              <label style={styles.label}>Subscription Details</label>
+              <textarea
+                name="subscriptionDetails"
+                value={details.subscriptionDetails}
+                onChange={handleChange}
+                style={styles.textarea}
+                placeholder="Describe what services or products are included in this subscription..."
+                rows="3"
+                required
+              />
+              
+              <label style={styles.label}>Billing Interval (Days)</label>
+              <select
+                name="billingInterval"
+                value={details.billingInterval}
+                onChange={handleChange}
+                style={styles.input}
+                required
+              >
+                <option value="7">Weekly (7 days)</option>
+                <option value="30">Monthly (30 days)</option>
+                <option value="90">Quarterly (90 days)</option>
+                <option value="365">Yearly (365 days)</option>
+              </select>
+            </>
+          );
+          
+        default:
+          return null;
+      }
+    };
+  
     return (
       <div style={styles.formContainer}>
         <h2 style={styles.heading}>Agreement Details</h2>
@@ -371,7 +493,7 @@ const AgreementFlow = ({ onCreateAgreement, onCancel, userData }) => {
         </p>
         
         <div style={styles.walletInfo}>
-          <p>Freelancer Wallet: <span style={styles.walletAddress}>{truncateAddress(walletAddresses.counterparty)}</span></p>
+          <p>Counterparty Wallet: <span style={styles.walletAddress}>{truncateAddress(walletAddresses.counterparty)}</span></p>
           <p>Your Wallet: <span style={styles.walletAddress}>{truncateAddress(walletAddresses.creator)}</span></p>
         </div>
         
@@ -425,6 +547,9 @@ const AgreementFlow = ({ onCreateAgreement, onCancel, userData }) => {
             min="0"
             required
           />
+          
+          {/* Render type-specific fields */}
+          {renderTypeSpecificFields()}
   
           <label style={styles.label}>Terms & Conditions</label>
           <textarea

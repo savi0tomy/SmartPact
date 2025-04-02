@@ -2,6 +2,7 @@
 const mongoose = require('mongoose');
 
 const AgreementSchema = new mongoose.Schema({
+  blockchainId: { type: String, required: false },
 
   title: {
     type: String,
@@ -26,6 +27,8 @@ const AgreementSchema = new mongoose.Schema({
     type: String,
     required: false
   },
+  
+  // Common fields
   amount: {
     type: String,
     required: true
@@ -44,9 +47,50 @@ const AgreementSchema = new mongoose.Schema({
   status: {
     type: String,
     required: true,
-    enum: ['Created', 'Funded', 'Completed', 'Cancelled', 'Disputed'],
+    enum: ['Created', 'Funded', 'Active', 'Completed', 'Cancelled', 'Disputed'],
     default: 'Created'
   },
+  
+  // Software Freelancing Agreement specific fields
+  deliverables: {
+    type: String,
+    required: function() { return this.type === 'Software Freelancing'; }
+  },
+  milestones: {
+    type: String,
+    required: function() { return this.type === 'Software Freelancing'; }
+  },
+  
+  // Rental Agreement specific fields
+  propertyAddress: {
+    type: String,
+    required: function() { return this.type === 'Rental Agreement'; }
+  },
+  securityDeposit: {
+    type: String,
+    required: function() { return this.type === 'Rental Agreement'; }
+  },
+  
+  // Subscription Agreement specific fields
+  subscriptionDetails: {
+    type: String,
+    required: function() { return this.type === 'Subscription Agreement'; }
+  },
+  billingInterval: {
+    type: Number, // in seconds
+    required: function() { return this.type === 'Subscription Agreement'; }
+  },
+  nextBillingDate: {
+    type: Date,
+    required: function() { return this.type === 'Subscription Agreement'; }
+  },
+  totalPaid: {
+    type: String,
+    default: "0",
+    required: function() { return this.type === 'Subscription Agreement'; }
+  },
+  
+  // Transaction and timing details
   txHash: {
     type: String,
     required: false

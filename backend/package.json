@@ -18,6 +18,7 @@
     "@web3auth/modal": "^9.6.0",
     "@web3auth/node-sdk": "^4.1.0",
     "@web3auth/single-factor-auth": "^9.5.0",
+    "connect-mongo": "^5.1.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",

@@ -1,10 +1,18 @@
 const express = require('express');
 const router = express.Router();
-const { ethers } = require('ethers');
+const { Web3 } = require('web3');
 const User = require('../models/User');
 const Agreement = require('../models/Agreement');
 const { decrypt } = require('../utils/encryption');
-const { contractABI, contractAddress } = require('../contracts');
+const { 
+  freelancerContractABI, 
+  freelancerContractAddress,
+  rentalContractABI,
+  rentalContractAddress,
+  subscriptionContractABI,
+  subscriptionContractAddress
+} = require('../contracts');
+const { getUserWallet } = require('../utils/wallet');
 
 // Create Agreement
 router.post('/create', async (req, res) => {
@@ -13,14 +21,20 @@ router.post('/create', async (req, res) => {
             title, 
             type,
             terms, 
-            creatorid,  // This should be from req.user.userId
             counterpartyid,
             amount, 
             startDate, 
-            dueDate 
+            dueDate,
+            // Common optional fields
+            deliverables,
+            milestones,
+            propertyAddress,
+            securityDeposit,
+            subscriptionDetails,
+            billingInterval
         } = req.body;
         
-        // Get counterparty wallet address
+        // Validate counterparty
         const counterparty = await User.findById(counterpartyid);
         if (!counterparty) {
             return res.status(400).json({ 
@@ -31,132 +45,217 @@ router.post('/create', async (req, res) => {
         
         const counterpartyAddress = decrypt(counterparty.walletAddress);
         
-        if (!counterpartyAddress || !amount || !dueDate) {
+        if (!counterpartyAddress || !amount || !dueDate || !startDate || !title) {
             return res.status(400).json({ 
                 success: false, 
                 message: 'Missing required fields' 
             });
         }
         
-        // Get creator info from middleware
-        const creatorId = req.user.userId;
-        const creatorWallet = req.user.walletAddress;
-
-        // Create provider using environment RPC endpoint
-        const provider = new ethers.JsonRpcProvider(req.session.rpcEndpoint || "https://zksync-sepolia.core.chainstack.com/d9aac8dbec2c4eca4805e00092c4680c");
+        // Type-specific validation
+        if (type === 'Software Freelancing' && (!deliverables || !milestones)) {
+            return res.status(400).json({
+                success: false,
+                message: 'Deliverables and milestones are required for freelancing agreements'
+            });
+        }
         
-        // Create a wallet instance for the authenticated user
-        // In a real app, you'd use the user's Web3Auth wallet to sign transactions
-        // For demo purposes we're using ethers wallet
-        const wallet = new ethers.Wallet(process.env.DEMO_PRIVATE_KEY, provider);
+        if (type === 'Rental Agreement' && (!securityDeposit || !propertyAddress)) {
+            return res.status(400).json({
+                success: false,
+                message: 'Security deposit and property address are required for rental agreements'
+            });
+        }
         
-        // Contract interaction
-        const contract = new ethers.Contract(
-            contractAddress,
-            contractABI,
-            wallet
-        );
-
-        const amountInWei = ethers.parseEther(amount.toString());
+        if (type === 'Subscription Agreement' && (!billingInterval || !subscriptionDetails)) {
+            return res.status(400).json({
+                success: false,
+                message: 'Billing interval and subscription details are required for subscription agreements'
+            });
+        }
+        
+        // Get authenticated wallet
+        const { web3, address, signTransaction } = await getUserWallet(req);
+        
+        // Select the appropriate contract based on agreement type
+        let contractABI, contractAddress, txData, txReceipt;
+        const amountInWei = web3.utils.toWei(amount.toString(), 'ether');
+        const startTimestamp = Math.floor(new Date(startDate).getTime() / 1000);
         const deadlineTimestamp = Math.floor(new Date(dueDate).getTime() / 1000);
         
-        const gasEstimate = await contract.createAgreement.estimateGas(
-            counterpartyAddress,
-            amountInWei,
-            deadlineTimestamp
-        );
+        // Create contract instance and prepare transaction based on type
+        switch(type) {
+            case 'Software Freelancing':
+                contractABI = freelancerContractABI;
+                contractAddress = freelancerContractAddress;
+                
+                const freelancerContract = new web3.eth.Contract(contractABI, contractAddress);
+                txData = {
+                    from: address,
+                    to: contractAddress,
+                    data: freelancerContract.methods.createAgreement(
+                        counterpartyAddress,
+                        amountInWei,
+                        deadlineTimestamp
+                    ).encodeABI(),
+                    gas: await freelancerContract.methods.createAgreement(
+                        counterpartyAddress,
+                        amountInWei,
+                        deadlineTimestamp
+                    ).estimateGas({ from: address })
+                };
+                break;
+                
+            case 'Rental Agreement':
+                contractABI = rentalContractABI;
+                contractAddress = rentalContractAddress;
+                
+                const securityDepositInWei = web3.utils.toWei(securityDeposit.toString(), 'ether');
+                const rentalContract = new web3.eth.Contract(contractABI, contractAddress);
+                txData = {
+                    from: address,
+                    to: contractAddress,
+                    data: rentalContract.methods.createAgreement(
+                        counterpartyAddress,
+                        amountInWei,
+                        securityDepositInWei,
+                        startTimestamp,
+                        deadlineTimestamp
+                    ).encodeABI(),
+                    gas: await rentalContract.methods.createAgreement(
+                        counterpartyAddress,
+                        amountInWei,
+                        securityDepositInWei,
+                        startTimestamp,
+                        deadlineTimestamp
+                    ).estimateGas({ from: address })
+                };
+                break;
+                
+            case 'Subscription Agreement':
+                contractABI = subscriptionContractABI;
+                contractAddress = subscriptionContractAddress;
+                
+                const subscriptionContract = new web3.eth.Contract(contractABI, contractAddress);
+                txData = {
+                    from: address,
+                    to: contractAddress,
+                    data: subscriptionContract.methods.createSubscription(
+                        counterpartyAddress,
+                        amountInWei,
+                        billingInterval,
+                        startTimestamp
+                    ).encodeABI(),
+                    gas: await subscriptionContract.methods.createSubscription(
+                        counterpartyAddress,
+                        amountInWei,
+                        billingInterval,
+                        startTimestamp
+                    ).estimateGas({ from: address })
+                };
+                break;
+                
+            default:
+                return res.status(400).json({
+                    success: false,
+                    message: 'Invalid agreement type'
+                });
+        }
 
-        const tx = await contract.createAgreement(
-            counterpartyAddress,
-            amountInWei,
-            deadlineTimestamp,
-            { gasLimit: gasEstimate + BigInt(100000) }
-        );
-
-        const receipt = await tx.wait();
+        // Sign and send transaction via Web3Auth
+        txReceipt = await signTransaction(txData);
         
         // Extract agreement ID from events
         let agreementId = null;
-        if (receipt.logs) {
-            const iface = new ethers.Interface(contractABI);
-            for (const log of receipt.logs) {
-                try {
-                    const parsed = iface.parseLog({ topics: log.topics, data: log.data });
-                    if (parsed?.name === "AgreementCreated") {
-                        agreementId = parsed.args.agreementId.toString();
-                        break;
-                    }
-                } catch (e) {
-                    console.log("Log parsing error:", e);
-                }
+        
+        if (txReceipt.events) {
+            if (type === 'Software Freelancing' && txReceipt.events.AgreementCreated) {
+                agreementId = txReceipt.events.AgreementCreated.returnValues.agreementId;
+            } else if (type === 'Rental Agreement' && txReceipt.events.AgreementCreated) {
+                agreementId = txReceipt.events.AgreementCreated.returnValues.agreementId;
+            } else if (type === 'Subscription Agreement' && txReceipt.events.SubscriptionCreated) {
+                agreementId = txReceipt.events.SubscriptionCreated.returnValues.subscriptionId;
             }
         }
-
-        if (!agreementId) {
-            throw new Error("Failed to extract agreement ID");
-        }
         
-        // Save to database
-        const newAgreement = new Agreement({
+        // Create agreement object with all fields
+        const agreementData = {
             blockchainId: agreementId,
             title,
             type,
-            creator: creatorId,
-            counterparty: counterpartyId,
+            creator: req.user.userId,
+            counterparty: counterpartyid,
             counterpartyAddress,
             amount,
             startDate: new Date(startDate),
             dueDate: new Date(dueDate),
             terms,
             status: "Created",
-            txHash: tx.hash
-        });
+            txHash: txReceipt.transactionHash,
+            // Type-specific fields
+            ...(type === 'Software Freelancing' && {
+                deliverables,
+                milestones
+            }),
+            ...(type === 'Rental Agreement' && {
+                propertyAddress,
+                securityDeposit
+            }),
+            ...(type === 'Subscription Agreement' && {
+                subscriptionDetails,
+                billingInterval,
+                nextBillingDate: new Date(startDate),
+                totalPaid: "0"
+            })
+        };
 
+        // Save to database
+        const newAgreement = new Agreement(agreementData);
         await newAgreement.save();
 
         res.status(201).json({
             success: true,
             id: newAgreement._id,
             agreementId,
-            txHash: tx.hash
+            txHash: txReceipt.transactionHash
         });
 
     } catch (error) {
         console.error('Agreement creation error:', error);
-        res.status(500).json({
+        const status = error.message.includes('expired') ? 401 : 500;
+        res.status(status).json({
             success: false,
-            message: error.message || 'Agreement creation failed'
+            message: error.message.includes('expired') 
+                ? 'Session expired. Please login again.'
+                : 'Agreement creation failed'
         });
     }
-})
+});
+
 // Fund Agreement
 router.post('/:agreementId/fund', async (req, res) => {
     try {
         const { agreementId } = req.params;
-        const creatorId = req.user.userId;
         
-        // Create provider using environment RPC endpoint
-        const provider = new ethers.JsonRpcProvider(req.session.rpcEndpoint || "https://zksync-sepolia.core.chainstack.com/d9aac8dbec2c4eca4805e00092c4680c");
-        
-        // For signing transactions, you need a wallet with a private key
-        // WARNING: This is a simplification. In production, NEVER handle private keys on the server
-        // For demo purposes, we'll create a random wallet (NOT SUITABLE FOR PRODUCTION)
-        const randomWallet = ethers.Wallet.createRandom().connect(provider);
+        // Get authenticated wallet
+        const { web3, address, signTransaction } = await getUserWallet(req);
+        const contract = new web3.eth.Contract(contractABI, contractAddress);
 
-        const contract = new ethers.Contract(
-            contractAddress,
-            contractABI,
-            randomWallet
-        );
-
-        const blockchainAgreement = await contract.agreements(agreementId);
+        // Get agreement details
+        const blockchainAgreement = await contract.methods.agreements(agreementId).call();
         const amountInWei = blockchainAgreement.amount;
 
-        const tx = await contract.fundAgreement(agreementId, {
-            value: amountInWei
-        });
+        // Prepare funding transaction
+        const txData = {
+            from: address,
+            to: contractAddress,
+            value: amountInWei,
+            data: contract.methods.fundAgreement(agreementId).encodeABI(),
+            gas: await contract.methods.fundAgreement(agreementId).estimateGas({ from: address })
+        };
 
-        await tx.wait();
+        // Sign and send transaction
+        const txReceipt = await signTransaction(txData);
 
         // Update database
         await Agreement.updateOne(
@@ -164,25 +263,28 @@ router.post('/:agreementId/fund', async (req, res) => {
             { 
                 status: "Funded",
                 fundedAt: new Date(),
-                fundTxHash: tx.hash
+                fundTxHash: txReceipt.transactionHash
             }
         );
 
         res.json({
             success: true,
-            txHash: tx.hash
+            txHash: txReceipt.transactionHash
         });
 
     } catch (error) {
         console.error('Funding error:', error);
-        res.status(500).json({
+        const status = error.message.includes('expired') ? 401 : 500;
+        res.status(status).json({
             success: false,
-            message: error.message || 'Funding failed'
+            message: error.message.includes('expired')
+                ? 'Session expired. Please login again.'
+                : 'Funding failed'
         });
     }
 });
 
-// Get Agreements
+// Get Agreements (unchanged)
 router.get('/user/:id', async (req, res) => {
   try {
       const agreements = await Agreement.find({ 
@@ -197,7 +299,7 @@ router.get('/user/:id', async (req, res) => {
   }
 });
 
-// Get Single Agreement
+// Get Single Agreement (unchanged)
 router.get('/:id', async (req, res) => {
   try {
       const agreement = await Agreement.findById(req.params.id)

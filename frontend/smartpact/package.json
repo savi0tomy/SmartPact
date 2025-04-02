@@ -21,7 +21,6 @@
     "react": "^19.0.0",
     "react-app-rewired": "^2.2.1",
     "react-dom": "^19.0.0",
-    "react-router-dom": "^7.4.1",
     "react-scripts": "5.0.1",
     "tailwindcss": "^4.0.14",
     "util": "^0.12.5",
@@ -29,7 +28,7 @@
   },
   "scripts": {
     "start": "vite",
-    "dev": "vite",
+    "dev": "vite --port 3000",
     "build": "vite build",
     "test": "react-scripts test"
   },

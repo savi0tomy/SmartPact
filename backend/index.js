@@ -129,7 +129,7 @@ const web3authSfa = new Web3Auth({
 
 // Initialize Web3Auth with the private key provider
 web3authSfa.init(privateKeyProvider);
-
+app.set('web3authSfa', web3authSfa);
 const jwt = require("jsonwebtoken");
 
 function parseToken(token) {
@@ -160,7 +160,7 @@ app.post("/login", async (req, res) => {
         }
 
         // Web3Auth authentication
-        await web3authSfa.connect({
+        const sessionId = await web3authSfa.connect({
             verifier: "google-auth-web3auth",
             verifierId: email,
             idToken: idToken,
@@ -170,7 +170,8 @@ app.post("/login", async (req, res) => {
         if (!provider) {
             throw new Error("Provider not initialized");
         }
-        
+
+        // Get wallet info
         const { Web3 } = require('web3');
         const web3 = new Web3(provider);
         const accounts = await web3.eth.getAccounts();
@@ -179,7 +180,21 @@ app.post("/login", async (req, res) => {
         }
 
         const walletAddress = accounts[0];
-        const encryptedName = encrypt(name); // Encrypt user name
+        
+        // Store session info instead of the provider object
+        // In the login endpoint, update the session storage:
+    req.session.web3auth = {
+    verifierId: email,
+    idToken: idToken, // Store the original idToken for reconnection
+    walletAddress: walletAddress,
+    rpcEndpoint: chainConfig.rpcTarget,
+    chainId: chainConfig.chainId
+
+    
+};
+    
+app.set('web3provider', web3authSfa.provider);
+        const encryptedName = encrypt(name);
         const encryptedWallet = encrypt(walletAddress);
 
         const balance = await web3.eth.getBalance(accounts[0]);
@@ -191,13 +206,14 @@ app.post("/login", async (req, res) => {
             user = new User({ email, walletAddress: encryptedWallet, name: encryptedName });
             await user.save();
             console.log("New user created:", user);
+        } else {
+            // Update wallet address in case it changed
+            user.walletAddress = encryptedWallet;
+            await user.save();
         }
         
         // Store user ID in session for authentication
         req.session.userId = user._id;
-        
-        // Save RPC endpoint in session for recreating provider later
-        req.session.rpcEndpoint = chainConfig.rpcTarget;
         
         return res.status(200).json({ 
             message: user ? "Login successful" : "Successfully created account", 
@@ -207,9 +223,13 @@ app.post("/login", async (req, res) => {
         });
     } catch (err) {
         console.error("Error during login:", err);
-        res.status(500).json({ error: "Internal server error" });
+        res.status(500).json({ error: err.message || "Internal server error" });
     }
 });
+
+// Add a middleware to reconnect the Web3Auth session
+// Update the middleware
+
 
 // Logout endpoint
 app.post('/logout', (req, res) => {
