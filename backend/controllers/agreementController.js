@@ -3,22 +3,21 @@ const { encrypt, decrypt } = require('../utils/encryption');
 
 exports.createAgreement = async (req, res) => {
   try {
-    const { templateType, agreementData } = req.body;
+    const { templateType, agreementData,user1id,user2id } = req.body;
 
     // Validate input
-    if (!templateType || !agreementData) {
+    if (!templateType || !agreementData || !user1id || !user2id) {
       return res.status(400).json({ message: 'Missing required fields' });
     }
 
     // Create new agreement
-    let agreement = new Agreement({
+    const agreement = new Agreement({
       templateType,
       agreementData: encrypt(JSON.stringify(agreementData)),
+      user1id,
+      user2id,
       status:'draft'
     });
-
-    // Generate and set encryption key
-    agreement.encryptionKey = agreement.generateEncryptionKey();
 
     // Save to database
     await agreement.save();
@@ -90,5 +89,20 @@ exports.updateAgreementStatus = async (req, res) => {
       message: 'Error updating agreement status', 
       error: error.message 
     });
+  }
+};
+
+exports.getAgreementsByUser = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const trimmedUserId = id.trim();
+    // Find agreements where the user is either user1 or user2
+    const agreements = await Agreement.find({
+      $or: [{ user1id: trimmedUserId }, { user2id: trimmedUserId }]
+    });
+
+    res.status(200).json(agreements);
+  } catch (error) {
+    res.status(500).json({ message: 'Error retrieving agreements', error: error.message });
   }
 };
