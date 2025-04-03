@@ -15,7 +15,15 @@ const Dashboard = ({ userData, onLogout }) => {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
   const [activeTab, setActiveTab] = useState("all"); // "all" or "requests"
-  const [fundingStatus, setFundingStatus] = useState({});
+  const [activationStatus, setActivationStatus] = useState({});
+  // New state for activation confirmation modal
+  const [activationModal, setActivationModal] = useState({
+    isOpen: false,
+    agreementId: null,
+    agreementType: null,
+    amount: null,
+    title: null
+  });
 
   // Fetch agreements on component mount and when new ones are created
   useEffect(() => {
@@ -78,36 +86,82 @@ const Dashboard = ({ userData, onLogout }) => {
     return agreement.counterparty._id === userData.id && agreement.status === "Created";
   };
 
-  const handleFundAgreement = async (agreementId) => {
+  // Open activation confirmation modal
+  const showActivationConfirmation = (agreement) => {
+    let amountToDeduct = "0";
+    let message = "";
+
+    if (agreement.type === "Software Freelancing") {
+      amountToDeduct = agreement.amount;
+      message = "full payment amount";
+    } else if (agreement.type === "Rental Agreement") {
+      amountToDeduct = agreement.securityDeposit;
+      message = "security deposit";
+    } else if (agreement.type === "Subscription Agreement") {
+      amountToDeduct = agreement.amount;
+      message = "first subscription fee";
+    }
+
+    setActivationModal({
+      isOpen: true,
+      agreementId: agreement._id,
+      agreementType: agreement.type,
+      amount: amountToDeduct,
+      title: agreement.title,
+      message: message
+    });
+  };
+
+  // Close activation modal
+  const closeActivationModal = () => {
+    setActivationModal({
+      isOpen: false,
+      agreementId: null,
+      agreementType: null,
+      amount: null,
+      title: null,
+      message: null
+    });
+  };
+
+  // Handle actual activation after confirmation
+  const handleActivateAgreement = async () => {
+    const agreementId = activationModal.agreementId;
     try {
-      setFundingStatus(prev => ({ ...prev, [agreementId]: 'loading' }));
+      setActivationStatus(prev => ({ ...prev, [agreementId]: 'loading' }));
       const response = await axios.post(`/api/agreements/${agreementId}/fund`);
       
       if (response.data && response.data.success) {
-        // Update agreement status locally
+        // Update agreement status locally to "Active"
         setAgreements(agreements.map(agreement => 
           agreement._id === agreementId 
-            ? { ...agreement, status: "Funded", fundTxHash: response.data.txHash }
+            ? { ...agreement, status: "Active", fundTxHash: response.data.txHash }
             : agreement
         ));
-        setFundingStatus(prev => ({ ...prev, [agreementId]: 'success' }));
+        setActivationStatus(prev => ({ ...prev, [agreementId]: 'success' }));
       } else {
-        setFundingStatus(prev => ({ ...prev, [agreementId]: 'error' }));
-        alert(`Funding failed: ${response.data?.message || 'Unknown error'}`);
+        setActivationStatus(prev => ({ ...prev, [agreementId]: 'error' }));
+        alert(`Activation failed: ${response.data?.message || 'Unknown error'}`);
       }
+      closeActivationModal();
     } catch (err) {
-      console.error("Failed to fund agreement:", err);
-      setFundingStatus(prev => ({ ...prev, [agreementId]: 'error' }));
-      // Show detailed error message
+      console.error("Failed to activate agreement:", err);
+      setActivationStatus(prev => ({ ...prev, [agreementId]: 'error' }));
       const errorMessage = err.response?.data?.message || err.message || 'Unknown error occurred';
-      alert(`Failed to fund agreement: ${errorMessage}`);
+      alert(`Failed to activate agreement: ${errorMessage}`);
+      closeActivationModal();
     }
   };
   
-  // MODIFIED: Only the creator can fund, regardless of agreement type
-  const canFundAgreement = (agreement) => {
-    // Safely check if the user is the creator
-    const creatorId = agreement.creator._id || agreement.creator;
+  // Only the creator can activate, regardless of agreement type
+  const canActivateAgreement = (agreement) => {
+    // Check if creator is populated (object with _id) or just an ID string
+    const isCreatorPopulated = agreement.creator && typeof agreement.creator === 'object';
+    const creatorId = isCreatorPopulated ? agreement.creator._id : agreement.creator;
+    
+    // Only show if:
+    // 1. Current user is creator
+    // 2. Status is "Accepted"
     return creatorId === userData.id && agreement.status === "Accepted";
   };
 
@@ -139,7 +193,7 @@ const Dashboard = ({ userData, onLogout }) => {
     }
   };
 
-  // MODIFIED: Filter agreements for the requests tab to only show "Created" status
+  // Filter agreements for the requests tab to only show "Created" status
   const filteredAgreements = activeTab === "all" 
     ? agreements
     : agreements.filter(agreement => 
@@ -245,17 +299,18 @@ const Dashboard = ({ userData, onLogout }) => {
                       Accept Agreement
                     </button>
                   )}
-                  {canFundAgreement(agreement) && (
+                  {/* Only show activate button if canActivateAgreement returns true */}
+                  {canActivateAgreement(agreement) && (
                     <button 
-                      style={styles.fundButton}
-                      onClick={() => handleFundAgreement(agreement._id)}
-                      disabled={fundingStatus[agreement._id] === 'loading'}
+                      style={styles.activateButton}
+                      onClick={() => showActivationConfirmation(agreement)}
+                      disabled={activationStatus[agreement._id] === 'loading'}
                     >
-                      {fundingStatus[agreement._id] === 'loading' ? 'Processing...' : 'Fund Agreement'}
+                      {activationStatus[agreement._id] === 'loading' ? 'Processing...' : 'Activate Agreement'}
                     </button>
                   )}
-                  {fundingStatus[agreement._id] === 'error' && (
-                    <div style={styles.errorMessage}>Funding failed. Please try again.</div>
+                  {activationStatus[agreement._id] === 'error' && (
+                    <div style={styles.errorMessage}>Activation failed. Please try again.</div>
                   )}
                 </div>
               ))
@@ -269,6 +324,31 @@ const Dashboard = ({ userData, onLogout }) => {
           </div>
         </>
       )}
+
+      {/* Activation Confirmation Modal */}
+      {activationModal.isOpen && (
+        <div style={styles.modalOverlay}>
+          <div style={styles.modalContent}>
+            <h3 style={styles.modalTitle}>Activate Agreement</h3>
+            <p>You are about to activate: <strong>{activationModal.title}</strong></p>
+            <p>This will deduct <strong>{activationModal.amount} ETH</strong> from your wallet as the {activationModal.message}.</p>
+            <div style={styles.modalButtons}>
+              <button 
+                style={styles.modalCancelButton} 
+                onClick={closeActivationModal}
+              >
+                Cancel
+              </button>
+              <button 
+                style={styles.modalConfirmButton} 
+                onClick={handleActivateAgreement}
+              >
+                Confirm Activation
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -276,7 +356,7 @@ const Dashboard = ({ userData, onLogout }) => {
 // Helper function to get status color
 const getStatusColor = (status) => {
   switch (status) {
-    case "Funded":
+    case "Active":
       return "#28A745"; // Green
     case "Accepted":
       return "#17A2B8"; // Blue
@@ -460,7 +540,7 @@ const styles = {
     display: "flex",
     marginBottom: "20px",
   },
-  fundButton: {
+  activateButton: {
     marginTop: "15px",
     padding: "8px 16px",
     backgroundColor: "#A65DE9",
@@ -471,6 +551,57 @@ const styles = {
     fontWeight: "600",
     width: "100%",
     transition: "background-color 0.3s ease",
+  },
+  // Modal styles
+  modalOverlay: {
+    position: "fixed",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: "rgba(0, 0, 0, 0.7)",
+    display: "flex",
+    justifyContent: "center",
+    alignItems: "center",
+    zIndex: 1000,
+  },
+  modalContent: {
+    backgroundColor: "white",
+    padding: "25px",
+    borderRadius: "10px",
+    width: "400px",
+    maxWidth: "90%",
+    boxShadow: "0 5px 15px rgba(0, 0, 0, 0.3)",
+  },
+  modalTitle: {
+    fontSize: "20px",
+    fontWeight: "bold",
+    marginBottom: "15px",
+    color: "#333",
+  },
+  modalButtons: {
+    display: "flex",
+    justifyContent: "flex-end",
+    marginTop: "20px",
+    gap: "10px",
+  },
+  modalCancelButton: {
+    padding: "8px 16px",
+    backgroundColor: "#6c757d",
+    color: "white",
+    border: "none",
+    borderRadius: "6px",
+    cursor: "pointer",
+    fontWeight: "500",
+  },
+  modalConfirmButton: {
+    padding: "8px 16px",
+    backgroundColor: "#A65DE9",
+    color: "white",
+    border: "none",
+    borderRadius: "6px",
+    cursor: "pointer",
+    fontWeight: "500",
   },
 };
 

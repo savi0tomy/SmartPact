@@ -77,82 +77,47 @@ router.post('/create', async (req, res) => {
         // Get authenticated wallet
         const { web3, address, signTransaction } = await getUserWallet(req);
         
-        // Select the appropriate contract based on agreement type
-        let contractABI, contractAddress, txData, txReceipt;
+        // Create contract instance based on type
+        let contract, method, methodParams;
+        let agreementId = null;
         const amountInWei = web3.utils.toWei(amount.toString(), 'ether');
         const startTimestamp = Math.floor(new Date(startDate).getTime() / 1000);
         const deadlineTimestamp = Math.floor(new Date(dueDate).getTime() / 1000);
         
-        // Create contract instance and prepare transaction based on type
+        // Prepare transaction based on type
         switch(type) {
             case 'Software Freelancing':
-                contractABI = freelancerContractABI;
-                contractAddress = freelancerContractAddress;
-                
-                const freelancerContract = new web3.eth.Contract(contractABI, contractAddress);
-                txData = {
-                    from: address,
-                    to: contractAddress,
-                    data: freelancerContract.methods.createAgreement(
-                        counterpartyAddress,
-                        amountInWei,
-                        deadlineTimestamp
-                    ).encodeABI(),
-                    gas: await freelancerContract.methods.createAgreement(
-                        counterpartyAddress,
-                        amountInWei,
-                        deadlineTimestamp
-                    ).estimateGas({ from: address })
-                };
+                contract = new web3.eth.Contract(freelancerContractABI, freelancerContractAddress);
+                method = 'createAgreement';
+                methodParams = [
+                    counterpartyAddress,
+                    amountInWei,
+                    deadlineTimestamp
+                ];
                 break;
                 
             case 'Rental Agreement':
-                contractABI = rentalContractABI;
-                contractAddress = rentalContractAddress;
-                
+                contract = new web3.eth.Contract(rentalContractABI, rentalContractAddress);
+                method = 'createAgreement';
                 const securityDepositInWei = web3.utils.toWei(securityDeposit.toString(), 'ether');
-                const rentalContract = new web3.eth.Contract(contractABI, contractAddress);
-                txData = {
-                    from: address,
-                    to: contractAddress,
-                    data: rentalContract.methods.createAgreement(
-                        counterpartyAddress,
-                        amountInWei,
-                        securityDepositInWei,
-                        startTimestamp,
-                        deadlineTimestamp
-                    ).encodeABI(),
-                    gas: await rentalContract.methods.createAgreement(
-                        counterpartyAddress,
-                        amountInWei,
-                        securityDepositInWei,
-                        startTimestamp,
-                        deadlineTimestamp
-                    ).estimateGas({ from: address })
-                };
+                methodParams = [
+                    counterpartyAddress,
+                    amountInWei,
+                    securityDepositInWei,
+                    startTimestamp,
+                    deadlineTimestamp
+                ];
                 break;
                 
             case 'Subscription Agreement':
-                contractABI = subscriptionContractABI;
-                contractAddress = subscriptionContractAddress;
-                
-                const subscriptionContract = new web3.eth.Contract(contractABI, contractAddress);
-                txData = {
-                    from: address,
-                    to: contractAddress,
-                    data: subscriptionContract.methods.createSubscription(
-                        counterpartyAddress,
-                        amountInWei,
-                        billingInterval,
-                        startTimestamp
-                    ).encodeABI(),
-                    gas: await subscriptionContract.methods.createSubscription(
-                        counterpartyAddress,
-                        amountInWei,
-                        billingInterval,
-                        startTimestamp
-                    ).estimateGas({ from: address })
-                };
+                contract = new web3.eth.Contract(subscriptionContractABI, subscriptionContractAddress);
+                method = 'createSubscription';
+                methodParams = [
+                    counterpartyAddress,
+                    amountInWei,
+                    billingInterval,
+                    startTimestamp
+                ];
                 break;
                 
             default:
@@ -162,19 +127,87 @@ router.post('/create', async (req, res) => {
                 });
         }
 
-        // Sign and send transaction via Web3Auth
-        txReceipt = await signTransaction(txData);
-        
-        // Extract agreement ID from events
-        let agreementId = null;
-        
-        if (txReceipt.events) {
-            if (type === 'Software Freelancing' && txReceipt.events.AgreementCreated) {
-                agreementId = txReceipt.events.AgreementCreated.returnValues.agreementId;
-            } else if (type === 'Rental Agreement' && txReceipt.events.AgreementCreated) {
-                agreementId = txReceipt.events.AgreementCreated.returnValues.agreementId;
-            } else if (type === 'Subscription Agreement' && txReceipt.events.SubscriptionCreated) {
-                agreementId = txReceipt.events.SubscriptionCreated.returnValues.subscriptionId;
+        // Call the contract method directly to get the return value
+        try {
+            const estimatedId = await contract.methods[method](...methodParams).call({ from: address });
+            // Convert BigInt to string to avoid serialization issues
+            agreementId = estimatedId.toString();
+            console.log(`Estimated agreement ID: ${agreementId}`);
+        } catch (error) {
+            console.warn('Failed to estimate agreement ID:', error);
+            // Continue anyway since we'll get the real ID after the transaction
+        }
+
+        // Prepare transaction data
+        const txData = {
+            from: address,
+            to: contract.options.address,
+            data: contract.methods[method](...methodParams).encodeABI(),
+            gas: await contract.methods[method](...methodParams).estimateGas({ from: address })
+        };
+
+        // Sign and send transaction
+        const txReceipt = await signTransaction(txData);
+
+        // Try to extract the agreement ID from the transaction receipt if we don't have it yet
+        if (!agreementId) {
+            // If no return value, try to extract from events
+            if (txReceipt.logs && txReceipt.logs.length > 0) {
+                for (const log of txReceipt.logs) {
+                    if (log.address.toLowerCase() === contract.options.address.toLowerCase()) {
+                        try {
+                            let eventName, idField;
+                            
+                            if (type === 'Subscription Agreement') {
+                                eventName = 'SubscriptionCreated';
+                                idField = 'subscriptionId';
+                            } else {
+                                eventName = 'AgreementCreated';
+                                idField = 'agreementId';
+                            }
+                            
+                            const eventAbi = contract._jsonInterface.find(
+                                intf => intf.name === eventName && intf.type === 'event'
+                            );
+                            
+                            if (eventAbi) {
+                                const decodedLog = web3.eth.abi.decodeLog(
+                                    eventAbi.inputs,
+                                    log.data,
+                                    log.topics.slice(1)
+                                );
+                                
+                                if (decodedLog && decodedLog[idField] !== undefined) {
+                                    // Convert to string to prevent BigInt serialization issues
+                                    agreementId = decodedLog[idField].toString();
+                                    break;
+                                }
+                            }
+                        } catch (error) {
+                            console.warn('Failed to decode log:', error);
+                        }
+                    }
+                }
+            }
+            
+            // If still no ID, query the contract for the latest agreement
+            if (!agreementId) {
+                try {
+                    if (type === 'Subscription Agreement') {
+                        const count = await contract.methods.subscriptionCount().call();
+                        // Convert to string and subtract 1
+                        agreementId = (parseInt(count.toString()) - 1).toString();
+                    } else {
+                        const count = await contract.methods.agreementCount().call();
+                        // Convert to string and subtract 1
+                        agreementId = (parseInt(count.toString()) - 1).toString();
+                    }
+                } catch (error) {
+                    console.warn('Failed to get agreement count:', error);
+                    // If all else fails, use a placeholder and log the issue
+                    agreementId = "unknown";
+                    console.error("Unable to determine blockchain ID for this agreement");
+                }
             }
         }
         
@@ -216,7 +249,7 @@ router.post('/create', async (req, res) => {
         res.status(201).json({
             success: true,
             id: newAgreement._id,
-            agreementId,
+            blockchainId: agreementId,
             txHash: txReceipt.transactionHash
         });
 
@@ -227,13 +260,12 @@ router.post('/create', async (req, res) => {
             success: false,
             message: error.message.includes('expired') 
                 ? 'Session expired. Please login again.'
-                : 'Agreement creation failed'
+                : 'Agreement creation failed: ' + error.message
         });
     }
 });
 
-// Fund Agreement
-// Fund Agreement
+// Fund/Activate Agreement (Updated method names and status)
 router.post('/:agreementId/fund', async (req, res) => {
     try {
         const { agreementId } = req.params;
@@ -254,7 +286,7 @@ router.post('/:agreementId/fund', async (req, res) => {
             });
         }
 
-        if (agreement.creator.toString() !== req.user.userId) {
+        if (!agreement.creator.equals(req.user.userId)) {
             return res.status(403).json({
                 success: false,
                 message: 'Only the agreement creator can fund this agreement'
@@ -271,17 +303,17 @@ router.post('/:agreementId/fund', async (req, res) => {
             case 'Software Freelancing':
                 contractABI = freelancerContractABI;
                 contractAddress = freelancerContractAddress;
-                methodName = 'fundAgreement';
+                methodName = 'fundAgreement'; // Keep original method name for freelancing
                 break;
             case 'Rental Agreement':
                 contractABI = rentalContractABI;
                 contractAddress = rentalContractAddress;
-                methodName = 'fundAgreement';
+                methodName = 'activateAgreement'; // Updated method name for rental
                 break;
             case 'Subscription Agreement':
                 contractABI = subscriptionContractABI;
                 contractAddress = subscriptionContractAddress;
-                methodName = 'fundSubscription';
+                methodName = 'activateSubscription'; // Updated method name for subscription
                 break;
             default:
                 return res.status(400).json({
@@ -298,12 +330,13 @@ router.post('/:agreementId/fund', async (req, res) => {
         
         if (agreement.type === 'Subscription Agreement') {
             blockchainAgreement = await contract.methods.subscriptions(agreement.blockchainId).call();
-            amountInWei = blockchainAgreement.amount;
+            amountInWei = blockchainAgreement.feeAmount || web3.utils.toWei(agreement.amount.toString(), 'ether');
+        } else if (agreement.type === 'Rental Agreement') {
+            blockchainAgreement = await contract.methods.agreements(agreement.blockchainId).call();
+            amountInWei = blockchainAgreement.securityDeposit || web3.utils.toWei(agreement.securityDeposit.toString(), 'ether');
         } else {
             blockchainAgreement = await contract.methods.agreements(agreement.blockchainId).call();
-            amountInWei = agreement.type === 'Rental Agreement' 
-                ? web3.utils.toWei((Number(agreement.amount) + Number(agreement.securityDeposit)).toString(), 'ether')
-                : web3.utils.toWei(agreement.amount.toString(), 'ether');
+            amountInWei = web3.utils.toWei(agreement.amount.toString(), 'ether');
         }
 
         // Prepare funding transaction
@@ -321,11 +354,11 @@ router.post('/:agreementId/fund', async (req, res) => {
         // Sign and send transaction
         const txReceipt = await signTransaction(txData);
 
-        // Update database
+        // Update database - change status to "Active" instead of "Funded"
         await Agreement.updateOne(
             { _id: agreementId },
             { 
-                status: "Funded",
+                status: "Active",  // Changed from "Funded" to "Active"
                 fundedAt: new Date(),
                 fundTxHash: txReceipt.transactionHash
             }
