@@ -233,25 +233,89 @@ router.post('/create', async (req, res) => {
 });
 
 // Fund Agreement
+// Fund Agreement
 router.post('/:agreementId/fund', async (req, res) => {
     try {
         const { agreementId } = req.params;
         
+        // Find the agreement in the database first to determine type
+        const agreement = await Agreement.findById(agreementId);
+        if (!agreement) {
+            return res.status(404).json({
+                success: false,
+                message: 'Agreement not found'
+            });
+        }
+
+        if (agreement.status !== "Accepted") {
+            return res.status(400).json({
+                success: false,
+                message: 'Agreement must be accepted before funding'
+            });
+        }
+
+        if (agreement.creator.toString() !== req.user.userId) {
+            return res.status(403).json({
+                success: false,
+                message: 'Only the agreement creator can fund this agreement'
+            });
+        }
+
         // Get authenticated wallet
         const { web3, address, signTransaction } = await getUserWallet(req);
+        
+        // Select appropriate contract based on agreement type
+        let contractABI, contractAddress, methodName;
+        
+        switch(agreement.type) {
+            case 'Software Freelancing':
+                contractABI = freelancerContractABI;
+                contractAddress = freelancerContractAddress;
+                methodName = 'fundAgreement';
+                break;
+            case 'Rental Agreement':
+                contractABI = rentalContractABI;
+                contractAddress = rentalContractAddress;
+                methodName = 'fundAgreement';
+                break;
+            case 'Subscription Agreement':
+                contractABI = subscriptionContractABI;
+                contractAddress = subscriptionContractAddress;
+                methodName = 'fundSubscription';
+                break;
+            default:
+                return res.status(400).json({
+                    success: false,
+                    message: 'Invalid agreement type'
+                });
+        }
+        
         const contract = new web3.eth.Contract(contractABI, contractAddress);
 
-        // Get agreement details
-        const blockchainAgreement = await contract.methods.agreements(agreementId).call();
-        const amountInWei = blockchainAgreement.amount;
+        // Get agreement details from blockchain
+        let blockchainAgreement;
+        let amountInWei;
+        
+        if (agreement.type === 'Subscription Agreement') {
+            blockchainAgreement = await contract.methods.subscriptions(agreement.blockchainId).call();
+            amountInWei = blockchainAgreement.amount;
+        } else {
+            blockchainAgreement = await contract.methods.agreements(agreement.blockchainId).call();
+            amountInWei = agreement.type === 'Rental Agreement' 
+                ? web3.utils.toWei((Number(agreement.amount) + Number(agreement.securityDeposit)).toString(), 'ether')
+                : web3.utils.toWei(agreement.amount.toString(), 'ether');
+        }
 
         // Prepare funding transaction
         const txData = {
             from: address,
             to: contractAddress,
             value: amountInWei,
-            data: contract.methods.fundAgreement(agreementId).encodeABI(),
-            gas: await contract.methods.fundAgreement(agreementId).estimateGas({ from: address })
+            data: contract.methods[methodName](agreement.blockchainId).encodeABI(),
+            gas: await contract.methods[methodName](agreement.blockchainId).estimateGas({ 
+                from: address,
+                value: amountInWei
+            })
         };
 
         // Sign and send transaction
@@ -259,7 +323,7 @@ router.post('/:agreementId/fund', async (req, res) => {
 
         // Update database
         await Agreement.updateOne(
-            { blockchainId: agreementId },
+            { _id: agreementId },
             { 
                 status: "Funded",
                 fundedAt: new Date(),
@@ -279,7 +343,7 @@ router.post('/:agreementId/fund', async (req, res) => {
             success: false,
             message: error.message.includes('expired')
                 ? 'Session expired. Please login again.'
-                : 'Funding failed'
+                : 'Funding failed: ' + error.message
         });
     }
 });
@@ -298,6 +362,30 @@ router.get('/user/:id', async (req, res) => {
       res.status(500).json({ success: false, message: 'Failed to fetch agreements' });
   }
 });
+
+// agreementRoutes.js
+router.post('/:agreementId/accept', async (req, res) => {
+    try {
+      const agreement = await Agreement.findByIdAndUpdate(
+        req.params.agreementId,
+        { status: "Accepted" },
+        { new: true }
+      ).populate('creator counterparty');
+  
+      if (!agreement) {
+        return res.status(404).json({ success: false, message: 'Agreement not found' });
+      }
+  
+      res.json({ 
+        success: true,
+        agreement // Return the updated agreement
+      });
+      
+    } catch (error) {
+      console.error('Accept error:', error);
+      res.status(500).json({ success: false, message: 'Server error' });
+    }
+  });
 
 // Get Single Agreement (unchanged)
 router.get('/:id', async (req, res) => {
