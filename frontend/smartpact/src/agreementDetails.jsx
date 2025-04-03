@@ -8,16 +8,23 @@ import { encrypt, decrypt } from "./encryption";
 axios.defaults.withCredentials = true;
 axios.defaults.baseURL = 'http://localhost:5001';
 
+// zkSync API base URL - update this with the correct API endpoint
+const ZKSYNC_API_BASE_URL = 'https://sepolia.era.zksync.dev';
+
 const AgreementDetails = ({ userData }) => {
  const { id } = useParams();
  const navigate = useNavigate();
  const [agreement, setAgreement] = useState(null);
  const [isLoading, setIsLoading] = useState(true);
  const [error, setError] = useState(null);
+ const [isReleasing, setIsReleasing] = useState(false);
  const [decryptedNames, setDecryptedNames] = useState({
  creatorName: "",
  counterpartyName: ""
  });
+ // Add states for transaction details
+ const [fundTxStatus, setFundTxStatus] = useState(null);
+ const [releaseTxStatus, setReleaseTxStatus] = useState(null);
 
  useEffect(() => {
  const fetchAgreement = async () => {
@@ -36,6 +43,19 @@ const AgreementDetails = ({ userData }) => {
  creatorName,
  counterpartyName
  });
+
+ // Fetch transaction status if transaction hashes exist
+ if (response.data.agreement.fundTxHash) {
+ fetchTransactionStatus(response.data.agreement.fundTxHash).then(status => {
+ setFundTxStatus(status);
+ });
+ }
+
+ if (response.data.agreement.releaseTxHash) {
+ fetchTransactionStatus(response.data.agreement.releaseTxHash).then(status => {
+ setReleaseTxStatus(status);
+ });
+ }
  } catch (err) {
  setError("Failed to load agreement details");
  console.error(err);
@@ -47,12 +67,187 @@ const AgreementDetails = ({ userData }) => {
  fetchAgreement();
  }, [id]);
 
+ // Function to fetch transaction status from zkSyncEra API
+ const fetchTransactionStatus = async (txHash) => {
+ try {
+ // First try to get transaction status
+ const statusResponse = await axios.get(
+ `${ZKSYNC_API_BASE_URL}/api?module=transaction&action=getstatus&txhash=${txHash}`
+ );
+
+ // Then get transaction receipt status for more details
+ const receiptResponse = await axios.get(
+ `${ZKSYNC_API_BASE_URL}/api?module=transaction&action=gettxreceiptstatus&txhash=${txHash}`
+ );
+
+ return {
+ status: statusResponse.data,
+ receipt: receiptResponse.data
+ };
+ } catch (error) {
+ console.error("Error fetching transaction details:", error);
+ return { error: error.message };
+ }
+ };
+
  const formatDate = (dateString) => {
  return new Date(dateString).toLocaleDateString('en-US', {
  year: 'numeric',
  month: 'long',
  day: 'numeric'
  });
+ };
+
+ // Helper function to get status color
+ const getStatusColor = (status) => {
+ switch (status) {
+ case 'Created':
+ return '#FFC107'; // Yellow
+ case 'Funded':
+ return '#28A745'; // Green
+ case 'Completed':
+ return '#17A2B8'; // Teal
+ case 'Disputed':
+ return '#DC3545'; // Red
+ default:
+ return '#6C757D'; // Gray
+ }
+ };
+
+ // Helper function to truncate transaction hash for display
+ const truncateHash = (hash) => {
+ if (!hash) return '';
+ return `${hash.substring(0, 8)}...${hash.substring(hash.length - 8)}`;
+ };
+
+ // Helper function to format transaction status
+ const formatTxStatus = (txStatus) => {
+ if (!txStatus) return 'Loading...';
+ if (txStatus.error) return `Error: ${txStatus.error}`;
+
+ const statusInfo = txStatus.status?.result;
+ const receiptInfo = txStatus.receipt?.result;
+
+ if (statusInfo && statusInfo.isError === '0') {
+ return 'Success';
+ } else if (statusInfo && statusInfo.isError === '1') {
+ return `Failed: ${statusInfo.errDescription || 'Unknown error'}`;
+ } else if (receiptInfo && receiptInfo.status === '1') {
+ return 'Confirmed';
+ } else if (receiptInfo && receiptInfo.status === '0') {
+ return 'Failed';
+ }
+
+ return 'Pending';
+ };
+
+ const handleReleasePayment = async () => {
+ try {
+ setIsReleasing(true);
+ const response = await axios.post(`/api/agreements/${id}/release`);
+
+ if (response.data && response.data.success) {
+ // Update the agreement locally
+ setAgreement({
+ ...agreement,
+ status: "Completed",
+ releaseTxHash: response.data.txHash
+ });
+
+ // Fetch the status of the new transaction
+ if (response.data.txHash) {
+ fetchTransactionStatus(response.data.txHash).then(status => {
+ setReleaseTxStatus(status);
+ });
+ }
+ } else {
+ alert(`Release failed: ${response.data?.message || 'Unknown error'}`);
+ }
+ } catch (err) {
+ console.error("Failed to release payment:", err);
+ const errorMessage = err.response?.data?.message || err.message || 'Unknown error occurred';
+ alert(`Failed to release payment: ${errorMessage}`);
+ } finally {
+ setIsReleasing(false);
+ }
+ };
+
+ // Render transaction details section
+ const renderTransactionDetails = () => {
+ if (!agreement) return null;
+
+ // Update to use zkSyncEra testnet explorer
+ const explorerBaseUrl = "https://sepolia-era.zksync.network";
+
+ return (
+ <div style={styles.transactionContainer}>
+ <h3 style={styles.transactionTitle}>Blockchain Details</h3>
+
+ {agreement.fundTxHash && (
+ <div style={styles.transactionItem}>
+ <div style={styles.txInfo}>
+ <span style={styles.transactionLabel}>Funding Transaction:</span>
+ <a
+ href={`${explorerBaseUrl}/tx/${agreement.fundTxHash}`}
+ target="_blank"
+ rel="noopener noreferrer"
+ style={styles.transactionLink}
+ >
+ {truncateHash(agreement.fundTxHash)}
+ </a>
+ <span style={{
+ ...styles.txStatusBadge,
+ backgroundColor: formatTxStatus(fundTxStatus) === 'Success' || formatTxStatus(fundTxStatus) === 'Confirmed'
+ ? '#28A745' : formatTxStatus(fundTxStatus).includes('Failed')
+ ? '#DC3545' : '#FFC107'
+ }}>
+ {formatTxStatus(fundTxStatus)}
+ </span>
+ </div>
+ <button
+ style={styles.refreshButton}
+ onClick={() => fetchTransactionStatus(agreement.fundTxHash).then(status => setFundTxStatus(status))}
+ >
+ Refresh
+ </button>
+ </div>
+ )}
+
+ {agreement.releaseTxHash && (
+ <div style={styles.transactionItem}>
+ <div style={styles.txInfo}>
+ <span style={styles.transactionLabel}>Payment Release Transaction:</span>
+ <a
+ href={`${explorerBaseUrl}/tx/${agreement.releaseTxHash}`}
+ target="_blank"
+ rel="noopener noreferrer"
+ style={styles.transactionLink}
+ >
+ {truncateHash(agreement.releaseTxHash)}
+ </a>
+ <span style={{
+ ...styles.txStatusBadge,
+ backgroundColor: formatTxStatus(releaseTxStatus) === 'Success' || formatTxStatus(releaseTxStatus) === 'Confirmed'
+ ? '#28A745' : formatTxStatus(releaseTxStatus).includes('Failed')
+ ? '#DC3545' : '#FFC107'
+ }}>
+ {formatTxStatus(releaseTxStatus)}
+ </span>
+ </div>
+ <button
+ style={styles.refreshButton}
+ onClick={() => fetchTransactionStatus(agreement.releaseTxHash).then(status => setReleaseTxStatus(status))}
+ >
+ Refresh
+ </button>
+ </div>
+ )}
+
+ {!agreement.fundTxHash && !agreement.releaseTxHash && (
+ <p style={styles.noTransactions}>No blockchain transactions yet.</p>
+ )}
+ </div>
+ );
  };
 
  // Render template based on agreement type
@@ -247,7 +442,7 @@ const AgreementDetails = ({ userData }) => {
  <ul style={templateStyles.bulletList}>
  <li>SERVICE PROVIDED: {agreement.subscriptionDetails || 'Service not specified'}</li>
  <li>SUBSCRIPTION TERMS: {agreement.terms || 'Not specified'}</li>
- <li>BILLING CYCLE: {Math.floor(agreement.billingInterval/86400)+ ' days' || 'Not specified'}</li>
+ <li>BILLING CYCLE: {Math.floor(agreement.billingInterval / 86400) + ' days' || 'Not specified'}</li>
  <li>ACCESS DURATION: {formatDate(agreement.startDate)} TO {formatDate(agreement.dueDate)}</li>
  </ul>
  </li>
@@ -405,35 +600,25 @@ const AgreementDetails = ({ userData }) => {
  </div>
 
  {renderTemplate()}
+ {renderTransactionDetails()}
 
  <div style={styles.actions}>
  {agreement.status === 'Created' && agreement.creator._id === userData.id && (
  <button style={styles.actionButton}>Fund Agreement</button>
  )}
  {agreement.status === 'Funded' && (
- <button style={styles.actionButton}>
- {userData.id === agreement.creator._id ? 'Release Funds' : 'Request Payment'}
+ <button
+ style={styles.actionButton}
+ onClick={handleReleasePayment}
+ disabled={isReleasing}
+ >
+ {isReleasing ? 'Processing...' :
+ userData.id === agreement.creator._id ? 'Release Funds' : 'Request Payment'}
  </button>
  )}
  </div>
  </div>
  );
-};
-
-// Helper function to get status color
-const getStatusColor = (status) => {
- switch (status) {
- case 'Created':
- return '#FFC107'; // Yellow
- case 'Funded':
- return '#28A745'; // Green
- case 'Completed':
- return '#17A2B8'; // Teal
- case 'Disputed':
- return '#DC3545'; // Red
- default:
- return '#6C757D'; // Gray
- }
 };
 
 // Styles for the container and UI elements
@@ -512,6 +697,62 @@ const styles = {
  fontWeight: 'bold',
  fontSize: '16px',
  transition: 'background 0.3s ease',
+ },
+ txInfo: {
+ display: 'flex',
+ alignItems: 'center',
+ gap: '10px',
+ flex: 1,
+ },
+ txStatusBadge: {
+ padding: '4px 8px',
+ borderRadius: '4px',
+ fontSize: '12px',
+ color: 'white',
+ fontWeight: 'bold',
+ },
+ refreshButton: {
+ padding: '5px 10px',
+ backgroundColor: '#f0f0f0',
+ border: '1px solid #ddd',
+ borderRadius: '4px',
+ cursor: 'pointer',
+ fontSize: '12px',
+ },
+ transactionContainer: {
+ marginTop: '30px',
+ padding: '20px',
+ backgroundColor: '#f5f5f5',
+ borderRadius: '8px',
+ borderLeft: '4px solid #A65DE9',
+ },
+ transactionTitle: {
+ fontSize: '18px',
+ marginBottom: '15px',
+ color: '#333',
+ },
+ transactionItem: {
+ display: 'flex',
+ justifyContent: 'space-between',
+ alignItems: 'center',
+ padding: '10px 0',
+ borderBottom: '1px solid #eee',
+ },
+ transactionLabel: {
+ fontWeight: 'bold',
+ color: '#555',
+ },
+ transactionLink: {
+ color: '#A65DE9',
+ textDecoration: 'none',
+ fontFamily: 'monospace',
+ padding: '4px 8px',
+ backgroundColor: '#f0e6fa',
+ borderRadius: '4px',
+ },
+ noTransactions: {
+ color: '#888',
+ fontStyle: 'italic',
  },
 };
 

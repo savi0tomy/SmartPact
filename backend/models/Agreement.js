@@ -47,7 +47,7 @@ const AgreementSchema = new mongoose.Schema({
   status: {
     type: String,
     required: true,
-    enum: ['Created','Accepted', 'Funded', 'Active', 'Completed', 'Cancelled', 'Disputed'],
+    enum: ['Created','Accepted', 'Active', 'Completed', 'Cancelled', 'Disputed'],
     default: 'Created'
   },
   
