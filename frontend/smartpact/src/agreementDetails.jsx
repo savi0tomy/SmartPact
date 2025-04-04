@@ -103,7 +103,7 @@ const AgreementDetails = ({ userData }) => {
  switch (status) {
  case 'Created':
  return '#FFC107'; // Yellow
- case 'Funded':
+ case 'Active':
  return '#28A745'; // Green
  case 'Completed':
  return '#17A2B8'; // Teal
@@ -264,8 +264,8 @@ const AgreementDetails = ({ userData }) => {
  case 'Rental Agreement':
  party1Role = "LESSOR";
  party2Role = "LESSEE";
- party1Name = decryptedNames.creatorName || agreement.creator.email;
- party2Name = decryptedNames.counterpartyName || agreement.counterparty.email;
+ party2Name = decryptedNames.creatorName || agreement.creator.email;
+ party1Name = decryptedNames.counterpartyName || agreement.counterparty.email;
  return (
  <div style={templateStyles.document}>
  <h1 style={templateStyles.title}>RENTAL AGREEMENT</h1>
@@ -423,8 +423,8 @@ const AgreementDetails = ({ userData }) => {
 
  case 'Subscription':
  case 'Subscription Agreement':
- party1Role = "SERVICE PROVIDER";
- party2Role = "SUBSCRIBER";
+ party2Role = "SERVICE PROVIDER";
+ party1Role = "SUBSCRIBER";
  party1Name = decryptedNames.creatorName || agreement.creator.email;
  party2Name = decryptedNames.counterpartyName || agreement.counterparty.email;
  return (
@@ -433,8 +433,8 @@ const AgreementDetails = ({ userData }) => {
 
  <div style={templateStyles.content}>
  <p>THIS SUBSCRIPTION AGREEMENT ("AGREEMENT") IS MADE AND ENTERED INTO AS OF {effectiveDate}, BY AND BETWEEN:</p>
- <p>{party1Role}: {party1Name}, HEREINAFTER REFERRED TO AS THE "PROVIDER," AND</p>
- <p>{party2Role}: {party2Name}, HEREINAFTER REFERRED TO AS THE "SUBSCRIBER."</p>
+ <p>{party1Role}: {party1Name}, HEREINAFTER REFERRED TO AS THE "SUBSCRIBER" AND</p>
+ <p>{party2Role}: {party2Name},  HEREINAFTER REFERRED TO AS THE "PROVIDER"</p>
 
  <ol style={templateStyles.sections}>
  <li>
