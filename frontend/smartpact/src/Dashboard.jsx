@@ -9,13 +9,17 @@ import AgreementFlow from "./AgreementFlow";
 axios.defaults.withCredentials = true;
 axios.defaults.baseURL = 'http://localhost:5001';
 
-const Dashboard = ({ userData, onLogout }) => {
+// ETH to INR conversion rate (this would ideally come from an API)
+const ETH_TO_INR_RATE = 243000; // Example rate (1 ETH = ₹243,000)
+
+const Dashboard = ({ userData, onLogout, onUpdateUserData }) => {
   const [showAgreementFlow, setShowAgreementFlow] = useState(false);
   const [agreements, setAgreements] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
   const [activeTab, setActiveTab] = useState("all"); // "all" or "requests"
   const [activationStatus, setActivationStatus] = useState({});
+  const [walletBalance, setWalletBalance] = useState(userData?.walletBalance || null);
   // New state for activation confirmation modal
   const [activationModal, setActivationModal] = useState({
     isOpen: false,
@@ -24,11 +28,46 @@ const Dashboard = ({ userData, onLogout }) => {
     amount: null,
     title: null
   });
+  // New state for payment modal
+  const [paymentModal, setPaymentModal] = useState({
+    isOpen: false,
+    agreementId: null,
+    agreementType: null,
+    amount: null,
+    title: null,
+    action: null, // "pay" or "complete" or "cancel"
+  });
+  // New state for operation status
+  const [operationStatus, setOperationStatus] = useState({});
 
   // Fetch agreements on component mount and when new ones are created
   useEffect(() => {
     fetchAgreements();
-  }, [userData]); // Re-fetch when userData changes
+    if (userData?.id) {
+      fetchWalletBalance();
+    }
+  }, [userData?.id]); // Only re-fetch when the ID changes// Re-fetch when userData changes
+
+  const fetchWalletBalance = async () => {
+    try {
+      const response = await axios.get('/api/user/wallet-balance');
+      if (response.data && response.data.success) {
+        // Set local state for immediate UI update
+        setWalletBalance(response.data.balance);
+        
+        // Update parent component state if the callback is provided
+        if (onUpdateUserData) {
+          onUpdateUserData({
+            ...userData,
+            walletBalance: response.data.balance
+          });
+        }
+      }
+    } catch (err) {
+      console.error("Failed to fetch wallet balance:", err);
+      // Don't set error state to avoid disrupting the UI
+    }
+  };
 
   const fetchAgreements = async () => {
     if (!userData?.id) return;
@@ -139,11 +178,17 @@ const Dashboard = ({ userData, onLogout }) => {
             : agreement
         ));
         setActivationStatus(prev => ({ ...prev, [agreementId]: 'success' }));
+        
+        // Close modal first
+        closeActivationModal();
+        
+        // Then update wallet balance
+        fetchWalletBalance();
       } else {
         setActivationStatus(prev => ({ ...prev, [agreementId]: 'error' }));
         alert(`Activation failed: ${response.data?.message || 'Unknown error'}`);
+        closeActivationModal();
       }
-      closeActivationModal();
     } catch (err) {
       console.error("Failed to activate agreement:", err);
       setActivationStatus(prev => ({ ...prev, [agreementId]: 'error' }));
@@ -163,6 +208,180 @@ const Dashboard = ({ userData, onLogout }) => {
     // 1. Current user is creator
     // 2. Status is "Accepted"
     return creatorId === userData.id && agreement.status === "Accepted";
+  };
+
+  // NEW FUNCTIONALITY: Show payment modal for completing agreement or paying fees
+  const showPaymentConfirmation = (agreement, action) => {
+    let amountToPay = "0";
+    let message = "";
+  
+    if (action === "complete" && agreement.type === "Software Freelancing") {
+      amountToPay = "0";
+      message = "mark the project as completed";
+    } else if (action === "pay" && agreement.type === "Rental Agreement") {
+      amountToPay = agreement.amount;
+      message = "monthly rent payment";
+    } else if (action === "pay" && agreement.type === "Subscription Agreement") {
+      amountToPay = agreement.amount;
+      message = "subscription fee";
+    } else if (action === "cancel" && agreement.type === "Subscription Agreement") {
+      amountToPay = "0";
+      message = "cancel your subscription";
+    } else if (action === "complete" && (agreement.type === "Rental Agreement" || agreement.type === "Subscription Agreement")) {
+      amountToPay = "0";
+      message = `mark the ${agreement.type.toLowerCase()} as completed`;
+    }
+  
+    setPaymentModal({
+      isOpen: true,
+      agreementId: agreement._id,
+      agreementType: agreement.type,
+      amount: amountToPay,
+      title: agreement.title,
+      message: message,
+      action: action
+    });
+  };
+  
+  const handlePaymentAction = async () => {
+    const agreementId = paymentModal.agreementId;
+    const action = paymentModal.action;
+    const agreementType = paymentModal.agreementType;
+    
+    try {
+      setOperationStatus(prev => ({ ...prev, [agreementId]: 'loading' }));
+      let endpoint = '';
+      let successStatus = '';
+      
+      if (action === "complete") {
+        endpoint = `/api/agreements/${agreementId}/complete`;
+        successStatus = "Completed";
+      } else if (action === "pay") {
+        // Different endpoints for rentals vs subscriptions
+        endpoint = agreementType === "Rental Agreement" 
+          ? `/api/agreements/${agreementId}/pay-rent`
+          : `/api/agreements/${agreementId}/pay-subscription`;
+        successStatus = "Active";
+      } else if (action === "cancel") {
+        endpoint = `/api/agreements/${agreementId}/cancel-subscription`;
+        successStatus = "Cancelled";
+      }
+      
+      const response = await axios.post(endpoint);
+      
+      if (response.data?.success) {
+        // Update agreement status locally
+        setAgreements(agreements.map(agreement => 
+          agreement._id === agreementId 
+            ? { 
+                ...agreement, 
+                status: successStatus,
+                // For payments, update payment history
+                ...(action === "pay" && { 
+                  paymentHistory: [
+                    ...(agreement.paymentHistory || []),
+                    {
+                      amount: paymentModal.amount,
+                      date: new Date().toISOString(),
+                      txHash: response.data.txHash
+                    }
+                  ],
+                  // For subscriptions, update next billing date
+                  ...(agreementType === "Subscription Agreement" && response.data.nextBillingDate && {
+                    nextBillingDate: response.data.nextBillingDate
+                  })
+                })
+              }
+            : agreement
+        ));
+        
+        setOperationStatus(prev => ({ ...prev, [agreementId]: 'success' }));
+        closePaymentModal();
+        fetchWalletBalance();
+        
+      } else {
+        throw new Error(response.data?.message || 'Operation failed');
+      }
+    } catch (err) {
+      console.error(`${action} failed:`, err);
+      setOperationStatus(prev => ({ ...prev, [agreementId]: 'error' }));
+      alert(`Failed to ${action}: ${err.response?.data?.message || err.message}`);
+      closePaymentModal();
+    }
+  };
+  
+  // Close payment modal (unchanged)
+  const closePaymentModal = () => {
+    setPaymentModal({
+      isOpen: false,
+      agreementId: null,
+      agreementType: null,
+      amount: null,
+      title: null,
+      message: null,
+      action: null
+    });
+  };
+  
+  // Check if user can complete a freelancing agreement (client only)
+  const canCompleteFreelancingAgreement = (agreement) => {
+    if (agreement.type !== "Software Freelancing") return false;
+    
+    // Check if creator is populated (object with _id) or just an ID string
+    const isCreatorPopulated = agreement.creator && typeof agreement.creator === 'object';
+    const creatorId = isCreatorPopulated ? agreement.creator._id : agreement.creator;
+    
+    return creatorId === userData.id && agreement.status === "Active";
+  };
+  
+  // Check if user can pay rent (tenant only)
+  const canPayRent = (agreement) => {
+    if (agreement.type !== "Rental Agreement") return false;
+    
+    const isCreatorPopulated = agreement.creator && typeof agreement.creator === 'object';
+    const creatorId = isCreatorPopulated ? agreement.creator._id : agreement.creator;
+    
+    return creatorId === userData.id && agreement.status === "Active";
+  };
+  
+  // Check if user can pay subscription (subscriber only)
+  const canPaySubscription = (agreement) => {
+    if (agreement.type !== "Subscription Agreement") return false;
+    
+    const isCreatorPopulated = agreement.creator && typeof agreement.creator === 'object';
+    const creatorId = isCreatorPopulated ? agreement.creator._id : agreement.creator;
+    
+    return creatorId === userData.id && agreement.status === "Active";
+  };
+  
+  // Check if user can cancel subscription (subscriber only)
+  const canCancelSubscription = (agreement) => {
+    if (agreement.type !== "Subscription Agreement") return false;
+    
+    const isCreatorPopulated = agreement.creator && typeof agreement.creator === 'object';
+    const creatorId = isCreatorPopulated ? agreement.creator._id : agreement.creator;
+    
+    return creatorId === userData.id && agreement.status === "Active";
+  };
+  
+  // Check if landlord can mark rental agreement as completed
+  const canLandlordCompleteRental = (agreement) => {
+    if (agreement.type !== "Rental Agreement") return false;
+    
+    const isCounterpartyPopulated = agreement.counterparty && typeof agreement.counterparty === 'object';
+    const counterpartyId = isCounterpartyPopulated ? agreement.counterparty._id : agreement.counterparty;
+    
+    return counterpartyId === userData.id && agreement.status === "Active";
+  };
+  
+  // Check if service provider can mark subscription as completed
+  const canProviderCompleteSubscription = (agreement) => {
+    if (agreement.type !== "Subscription Agreement") return false;
+    
+    const isCounterpartyPopulated = agreement.counterparty && typeof agreement.counterparty === 'object';
+    const counterpartyId = isCounterpartyPopulated ? agreement.counterparty._id : agreement.counterparty;
+    
+    return counterpartyId === userData.id && agreement.status === "Active";
   };
 
   const getOtherPartyName = (agreement) => {
@@ -193,6 +412,52 @@ const Dashboard = ({ userData, onLogout }) => {
     }
   };
 
+  // Convert ETH to INR
+  const convertToINR = (ethAmount) => {
+    if (!ethAmount) return "0";
+    const inrAmount = parseFloat(ethAmount) * ETH_TO_INR_RATE;
+    return inrAmount.toLocaleString('en-IN');
+  };
+
+  // Calculate next payment date for rental or subscription
+  const getNextPaymentDate = (agreement) => {
+    if (!agreement.lastPaymentDate) {
+      // If no payments have been made yet, use start date
+      return new Date(agreement.startDate);
+    }
+    
+    const lastPayment = new Date(agreement.lastPaymentDate);
+    const nextPayment = new Date(lastPayment);
+    nextPayment.setMonth(nextPayment.getMonth() + 1); // Add one month
+    
+    return nextPayment;
+  };
+
+  // Format date for display
+  const formatDate = (dateString) => {
+    return new Date(dateString).toLocaleDateString();
+  };
+
+  // Properly handle logout
+  const handleLogoutClick = async () => {
+    try {
+      const response = await axios.post('/logout', {}, {
+        withCredentials: true,
+        baseURL: 'http://localhost:5001'
+      });
+      
+      if (response.data.success) {
+        if (onLogout) {
+          onLogout();
+        }
+      } else {
+        console.error("Logout failed:", response.data.message);
+      }
+    } catch (error) {
+      console.error("Logout error:", error);
+    }
+  };
+
   // Filter agreements for the requests tab to only show "Created" status
   const filteredAgreements = activeTab === "all" 
     ? agreements
@@ -204,14 +469,29 @@ const Dashboard = ({ userData, onLogout }) => {
     <div style={styles.container}>
       {/* Header */}
       <div style={styles.header}>
-        <img src={Logo} alt="Logo" style={styles.logo} />
-        <span style={styles.ethBalance}>
-          {userData?.walletBalance ? `${userData.walletBalance} ETH` : "Wallet not connected"}
-        </span>
-        <button style={styles.logoutButton} onClick={onLogout}>
-          Logout
-        </button>
-        <img src={Icon} alt="Icon" style={styles.profileCircle} />
+        <div style={styles.headerLeft}>
+          <img src={Logo} alt="Logo" style={styles.logo} />
+        </div>
+        
+        <div style={styles.headerMiddle}>
+          {walletBalance && (
+            <div style={styles.balanceContainer}>
+              <div style={styles.ethBalance}>{walletBalance} ETH</div>
+              <div style={styles.inrBalance}>≈ ₹{convertToINR(walletBalance)}</div>
+            </div>
+          )}
+        </div>
+        
+        <div style={styles.headerRight}>
+          <button style={styles.logoutButton} onClick={handleLogoutClick}>
+            Logout
+          </button>
+          {userData?.profilePicture ? (
+            <img src={userData.profilePicture} alt="Profile" style={styles.profileCircle} />
+          ) : (
+            <img src={Icon} alt="Icon" style={styles.profileCircle} />
+          )}
+        </div>
       </div>
 
       {showAgreementFlow ? (
@@ -283,14 +563,17 @@ const Dashboard = ({ userData, onLogout }) => {
                     With: {getOtherPartyName(agreement)}
                   </p>
                   <div style={styles.dates}>
-                    <span>Start: {new Date(agreement.startDate).toLocaleDateString()}</span>
-                    <span>Due: {new Date(agreement.dueDate).toLocaleDateString()}</span>
+                    <span>Start: {formatDate(agreement.startDate)}</span>
+                    <span>Due: {formatDate(agreement.dueDate)}</span>
                   </div>
                   {agreement.amount && (
                     <div style={styles.amount}>
-                      Amount: {agreement.amount} ETH
+                      Amount: {agreement.amount} ETH <span style={styles.inrAmount}>(≈ ₹{convertToINR(agreement.amount)})</span>
                     </div>
                   )}
+              
+                  
+                  {/* Accept Button */}
                   {canAcceptAgreement(agreement) && (
                     <button 
                       style={styles.acceptButton}
@@ -299,7 +582,8 @@ const Dashboard = ({ userData, onLogout }) => {
                       Accept Agreement
                     </button>
                   )}
-                  {/* Only show activate button if canActivateAgreement returns true */}
+                  
+                  {/* Activate Button */}
                   {canActivateAgreement(agreement) && (
                     <button 
                       style={styles.activateButton}
@@ -309,8 +593,79 @@ const Dashboard = ({ userData, onLogout }) => {
                       {activationStatus[agreement._id] === 'loading' ? 'Processing...' : 'Activate Agreement'}
                     </button>
                   )}
+                  
+                  {/* Complete Freelancing Button (Client) */}
+                  {canCompleteFreelancingAgreement(agreement) && (
+                    <button 
+                      style={styles.completeButton}
+                      onClick={() => showPaymentConfirmation(agreement, "complete")}
+                      disabled={operationStatus[agreement._id] === 'loading'}
+                    >
+                      {operationStatus[agreement._id] === 'loading' ? 'Processing...' : 'Mark Project Complete'}
+                    </button>
+                  )}
+                  
+                  {/* Pay Rent Button (Tenant) */}
+                  {canPayRent(agreement) && (
+                    <button 
+                      style={styles.payButton}
+                      onClick={() => showPaymentConfirmation(agreement, "pay")}
+                      disabled={operationStatus[agreement._id] === 'loading'}
+                    >
+                      {operationStatus[agreement._id] === 'loading' ? 'Processing...' : 'Pay Monthly Rent'}
+                    </button>
+                  )}
+                  
+                  {/* Pay Subscription Button (Subscriber) */}
+                  {canPaySubscription(agreement) && (
+                    <button 
+                      style={styles.payButton}
+                      onClick={() => showPaymentConfirmation(agreement, "pay")}
+                      disabled={operationStatus[agreement._id] === 'loading'}
+                    >
+                      {operationStatus[agreement._id] === 'loading' ? 'Processing...' : 'Pay Subscription Fee'}
+                    </button>
+                  )}
+                  
+                  {/* Cancel Subscription Button (Subscriber) */}
+                  {canCancelSubscription(agreement) && (
+                    <button 
+                      style={styles.cancelButton}
+                      onClick={() => showPaymentConfirmation(agreement, "cancel")}
+                      disabled={operationStatus[agreement._id] === 'loading'}
+                    >
+                      {operationStatus[agreement._id] === 'loading' ? 'Processing...' : 'Cancel Subscription'}
+                    </button>
+                  )}
+                  
+                  {/* Mark Rental Complete Button (Landlord) */}
+                  {canLandlordCompleteRental(agreement) && (
+                    <button 
+                      style={styles.completeButton}
+                      onClick={() => showPaymentConfirmation(agreement, "complete")}
+                      disabled={operationStatus[agreement._id] === 'loading'}
+                    >
+                      {operationStatus[agreement._id] === 'loading' ? 'Processing...' : 'Mark Rental Complete'}
+                    </button>
+                  )}
+                  
+                  {/* Mark Subscription Complete Button (Service Provider) */}
+                  {canProviderCompleteSubscription(agreement) && (
+                    <button 
+                      style={styles.completeButton}
+                      onClick={() => showPaymentConfirmation(agreement, "complete")}
+                      disabled={operationStatus[agreement._id] === 'loading'}
+                    >
+                      {operationStatus[agreement._id] === 'loading' ? 'Processing...' : 'Mark Subscription Complete'}
+                    </button>
+                  )}
+                  
                   {activationStatus[agreement._id] === 'error' && (
                     <div style={styles.errorMessage}>Activation failed. Please try again.</div>
+                  )}
+                  
+                  {operationStatus[agreement._id] === 'error' && (
+                    <div style={styles.errorMessage}>Operation failed. Please try again.</div>
                   )}
                 </div>
               ))
@@ -332,6 +687,7 @@ const Dashboard = ({ userData, onLogout }) => {
             <h3 style={styles.modalTitle}>Activate Agreement</h3>
             <p>You are about to activate: <strong>{activationModal.title}</strong></p>
             <p>This will deduct <strong>{activationModal.amount} ETH</strong> from your wallet as the {activationModal.message}.</p>
+            <p style={styles.inrConversion}>≈ ₹{convertToINR(activationModal.amount)}</p>
             <div style={styles.modalButtons}>
               <button 
                 style={styles.modalCancelButton} 
@@ -344,6 +700,45 @@ const Dashboard = ({ userData, onLogout }) => {
                 onClick={handleActivateAgreement}
               >
                 Confirm Activation
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* Payment/Completion/Cancellation Modal */}
+      {paymentModal.isOpen && (
+        <div style={styles.modalOverlay}>
+          <div style={styles.modalContent}>
+            <h3 style={styles.modalTitle}>
+              {paymentModal.action === "pay" ? "Payment" : 
+               paymentModal.action === "complete" ? "Complete Agreement" : 
+               "Cancel Subscription"}
+            </h3>
+            <p>You are about to {paymentModal.message} for: <strong>{paymentModal.title}</strong></p>
+            {paymentModal.action === "pay" && (
+              <>
+                <p>This will deduct <strong>{paymentModal.amount} ETH</strong> from your wallet.</p>
+                <p style={styles.inrConversion}>≈ ₹{convertToINR(paymentModal.amount)}</p>
+              </>
+            )}
+            <div style={styles.modalButtons}>
+              <button 
+                style={styles.modalCancelButton} 
+                onClick={closePaymentModal}
+              >
+                Cancel
+              </button>
+              <button 
+                style={{
+                  ...styles.modalConfirmButton,
+                  backgroundColor: paymentModal.action === "cancel" ? "#dc3545" : "#A65DE9"
+                }} 
+                onClick={handlePaymentAction}
+              >
+                {paymentModal.action === "pay" ? "Confirm Payment" : 
+                 paymentModal.action === "complete" ? "Confirm Completion" : 
+                 "Confirm Cancellation"}
               </button>
             </div>
           </div>
@@ -362,6 +757,10 @@ const getStatusColor = (status) => {
       return "#17A2B8"; // Blue
     case "Created":
       return "#FFC107"; // Yellow
+    case "Completed":
+      return "#6610f2"; // Purple
+    case "Cancelled":
+      return "#dc3545"; // Red
     default:
       return "#6C757D"; // Gray
   }
@@ -381,18 +780,6 @@ const styles = {
     minHeight: "100vh", // Changed from height to minHeight
     padding: "20px 0 60px 0", // Added bottom padding
   },
-  acceptButton: {
-    marginTop: "15px",
-    padding: "8px 16px",
-    backgroundColor: "#28A745", // Green color
-    color: "white",
-    border: "none",
-    borderRadius: "6px",
-    cursor: "pointer",
-    fontWeight: "600",
-    width: "100%",
-    transition: "background-color 0.3s ease",
-  },
   header: {
     display: "flex",
     alignItems: "center",
@@ -404,12 +791,47 @@ const styles = {
     boxShadow: "0px 5px 15px rgba(0,0,0,0.1)",
     marginBottom: "20px",
   },
+  headerLeft: {
+    flex: "1",
+  },
+  headerMiddle: {
+    flex: "2",
+    display: "flex",
+    justifyContent: "center",
+  },
+  headerRight: {
+    flex: "1",
+    display: "flex",
+    justifyContent: "flex-end",
+    alignItems: "center",
+    gap: "15px",
+  },
+  balanceContainer: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+  },
   logo: {
     width: "40px",
   },
   ethBalance: {
     fontSize: "16px",
     fontWeight: "bold",
+  },
+  inrBalance: {
+    fontSize: "12px",
+    color: "#666",
+  },
+  inrAmount: {
+    fontSize: "12px",
+    color: "#666",
+    marginLeft: "5px",
+  },
+  inrConversion: {
+    fontSize: "14px",
+    color: "#666",
+    marginTop: "5px",
+    textAlign: "center",
   },
   profileCircle: {
     width: "35px",
@@ -432,7 +854,18 @@ const styles = {
     borderRadius: "8px",
     cursor: "pointer",
     transition: "all 0.3s ease",
-    marginRight: "10px",
+  },
+  acceptButton: {
+    marginTop: "15px",
+    padding: "8px 16px",
+    backgroundColor: "#28A745", // Green color
+    color: "white",
+    border: "none",
+    borderRadius: "6px",
+    cursor: "pointer",
+    fontWeight: "600",
+    width: "100%",
+    transition: "background-color 0.3s ease",
   },
   welcomeText: {
     fontSize: "28px",
@@ -602,6 +1035,51 @@ const styles = {
     borderRadius: "6px",
     cursor: "pointer",
     fontWeight: "500",
+  },
+  payButton: {
+    marginTop: "10px",
+    padding: "8px 16px",
+    backgroundColor: "#4CAF50", // Green
+    color: "white",
+    border: "none",
+    borderRadius: "6px",
+    cursor: "pointer",
+    fontWeight: "600",
+    width: "100%",
+    transition: "background-color 0.3s ease",
+  },
+  completeButton: {
+    marginTop: "10px",
+    padding: "8px 16px",
+    backgroundColor: "#007BFF", // Blue
+    color: "white",
+    border: "none",
+    borderRadius: "6px",
+    cursor: "pointer",
+    fontWeight: "600",
+    width: "100%",
+    transition: "background-color 0.3s ease",
+  },
+  cancelButton: {
+    marginTop: "10px",
+    padding: "8px 16px",
+    backgroundColor: "#dc3545", // Red
+    color: "white",
+    border: "none",
+    borderRadius: "6px",
+    cursor: "pointer",
+    fontWeight: "600",
+    width: "100%",
+    transition: "background-color 0.3s ease",
+  },
+  disabledButton: {
+    backgroundColor: "#cccccc",
+    cursor: "not-allowed",
+  },
+  nextBillingInfo: {
+    fontSize: "12px",
+    color: "#666",
+    marginTop: "5px",
   },
 };
 

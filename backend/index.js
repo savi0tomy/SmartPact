@@ -14,7 +14,7 @@ const {encrypt, decrypt} = require("./utils/encryption");
 const app = express();
 app.use(express.json());
 const cookieParser = require('cookie-parser');
-
+const userRoutes =require("./routes/userRoutes");
 app.use(cors({
     origin: 'http://localhost:3000', // Your frontend URL
     credentials: true // Required for cookies/sessions
@@ -91,8 +91,41 @@ app.get("/", (req, res) => {
 // Apply authentication middleware to protected routes
 app.use('/api/agreements', requireAuth, agreementRoutes);
 
-const userRoutes = require("./routes/userRoutes");
+// Ensure this is correct in your index.js
 app.use("/users", userRoutes);
+// Add this to your server's index.js or userRoutes.js file
+app.get('/api/user/wallet-balance', requireAuth, async (req, res) => {
+    try {
+      // Get the stored wallet address from the user
+      const user = await User.findById(req.session.userId);
+      if (!user) {
+        return res.status(404).json({ success: false, message: 'User not found' });
+      }
+      
+      const walletAddress = decrypt(user.walletAddress);
+      
+      // Initialize Web3 with the RPC endpoint
+      const { Web3 } = require('web3');
+      const web3 = new Web3(chainConfig.rpcTarget);
+      
+      // Get the balance
+      const balanceWei = await web3.eth.getBalance(walletAddress);
+      const balanceEth = web3.utils.fromWei(balanceWei, 'ether');
+      
+      return res.json({
+        success: true,
+        balance: parseFloat(balanceEth).toFixed(4)
+      });
+    } catch (error) {
+      console.error("Error fetching wallet balance:", error);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to fetch wallet balance'
+      });
+    }
+  });
+        
+
 
 // Error handling middleware
 app.use((err, req, res, next) => {
@@ -232,14 +265,34 @@ app.set('web3provider', web3authSfa.provider);
 
 
 // Logout endpoint
-app.post('/logout', (req, res) => {
-    req.session.destroy((err) => {
+app.post('/logout', async (req, res) => {
+    try {
+      // Get the web3auth session from app's storage
+      const web3authProvider = app.get('web3provider');
+      
+      // If there's an active web3auth session, disconnect it
+      if (web3authProvider) {
+        try {
+          await web3authSfa.logout();
+          app.set('web3provider', null); // Clear the provider
+        } catch (web3Error) {
+          console.log("Error during Web3Auth logout:", web3Error);
+          // Continue with session destruction even if Web3Auth logout fails
+        }
+      }
+      
+      // Destroy the session
+      req.session.destroy((err) => {
         if (err) {
-            return res.status(500).json({ success: false, message: 'Logout failed' });
+          return res.status(500).json({ success: false, message: 'Logout failed' });
         }
         res.json({ success: true, message: 'Logged out successfully' });
-    });
-});
+      });
+    } catch (error) {
+      console.error("Error during logout:", error);
+      res.status(500).json({ success: false, message: 'Logout failed: ' + error.message });
+    }
+  });
 
 const PORT = process.env.PORT || 5001;
 connectDB().then(() => {

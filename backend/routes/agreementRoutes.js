@@ -84,13 +84,13 @@ router.post('/create', async (req, res) => {
         const startTimestamp = Math.floor(new Date(startDate).getTime() / 1000);
         const deadlineTimestamp = Math.floor(new Date(dueDate).getTime() / 1000);
         
-        // Prepare transaction based on type
+        // Prepare transaction based on type - SWAPPED ADDRESSES!
         switch(type) {
             case 'Software Freelancing':
                 contract = new web3.eth.Contract(freelancerContractABI, freelancerContractAddress);
                 method = 'createAgreement';
                 methodParams = [
-                    counterpartyAddress,
+                    counterpartyAddress, // Counterparty is the freelancer (service provider)
                     amountInWei,
                     deadlineTimestamp
                 ];
@@ -101,7 +101,7 @@ router.post('/create', async (req, res) => {
                 method = 'createAgreement';
                 const securityDepositInWei = web3.utils.toWei(securityDeposit.toString(), 'ether');
                 methodParams = [
-                    counterpartyAddress,
+                    counterpartyAddress, // Counterparty is the landlord
                     amountInWei,
                     securityDepositInWei,
                     startTimestamp,
@@ -113,7 +113,7 @@ router.post('/create', async (req, res) => {
                 contract = new web3.eth.Contract(subscriptionContractABI, subscriptionContractAddress);
                 method = 'createSubscription';
                 methodParams = [
-                    counterpartyAddress,
+                    counterpartyAddress, // Counterparty is the service provider
                     amountInWei,
                     billingInterval,
                     startTimestamp
@@ -434,6 +434,421 @@ router.get('/:id', async (req, res) => {
   } catch (error) {
       res.status(500).json({ success: false, message: 'Failed to fetch agreement' });
   }
+});
+
+// Add these routes to your agreementRoutes.js file
+
+// Complete Freelancer Agreement (client marks work as complete)
+router.post('/:agreementId/complete', async (req, res) => {
+    try {
+        const { agreementId } = req.params;
+        
+        // Find the agreement
+        const agreement = await Agreement.findById(agreementId);
+        if (!agreement) {
+            return res.status(404).json({
+                success: false,
+                message: 'Agreement not found'
+            });
+        }
+
+        // Validate the user is authorized to complete this agreement
+        if (agreement.type === 'Software Freelancing') {
+            // For freelancing, only the service provider (counterparty) can mark as complete
+            if (!agreement.counterparty.equals(req.user.userId)) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Only the service provider can mark this agreement as complete'
+                });
+            }
+            
+            // Check status is appropriate
+            if (agreement.status !== "Active") {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Agreement must be active before it can be completed'
+                });
+            }
+        } else if (agreement.type === 'Rental Agreement') {
+            // For rental, only the landlord (counterparty) can mark as complete
+            if (!agreement.counterparty.equals(req.user.userId)) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Only the landlord can mark this agreement as complete'
+                });
+            }
+            
+            // Check if agreement end date has passed
+            if (new Date() < new Date(agreement.dueDate)) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Agreement period has not ended yet'
+                });
+            }
+        } else if (agreement.type === 'Subscription Agreement') {
+            // For subscription, only the service provider (counterparty) can mark as complete
+            if (!agreement.counterparty.equals(req.user.userId)) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Only the service provider can mark this agreement as complete'
+                });
+            }
+        } else {
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid agreement type'
+            });
+        }
+
+        // Get authenticated wallet
+        const { web3, address, signTransaction } = await getUserWallet(req);
+        
+        // Select appropriate contract based on agreement type
+        let contractABI, contractAddress, methodName;
+        
+        switch(agreement.type) {
+            case 'Software Freelancing':
+                contractABI = freelancerContractABI;
+                contractAddress = freelancerContractAddress;
+                methodName = 'completeAgreement';
+                break;
+            case 'Rental Agreement':
+                contractABI = rentalContractABI;
+                contractAddress = rentalContractAddress;
+                methodName = 'completeAgreement';
+                break;
+            case 'Subscription Agreement':
+                contractABI = subscriptionContractABI;
+                contractAddress = subscriptionContractAddress;
+                methodName = 'completeSubscription';
+                break;
+        }
+        
+        const contract = new web3.eth.Contract(contractABI, contractAddress);
+
+        // Prepare transaction
+        const txData = {
+            from: address,
+            to: contractAddress,
+            data: contract.methods[methodName](agreement.blockchainId).encodeABI(),
+            gas: await contract.methods[methodName](agreement.blockchainId).estimateGas({ from: address })
+        };
+
+        // Sign and send transaction
+        const txReceipt = await signTransaction(txData);
+
+        // Update database
+        await Agreement.updateOne(
+            { _id: agreementId },
+            { 
+                status: "Completed",
+                completedAt: new Date(),
+                completionTxHash: txReceipt.transactionHash
+            }
+        );
+
+        res.json({
+            success: true,
+            txHash: txReceipt.transactionHash
+        });
+
+    } catch (error) {
+        console.error('Agreement completion error:', error);
+        const status = error.message.includes('expired') ? 401 : 500;
+        res.status(status).json({
+            success: false,
+            message: error.message.includes('expired')
+                ? 'Session expired. Please login again.'
+                : 'Agreement completion failed: ' + error.message
+        });
+    }
+});
+
+// Pay Rent (for rental agreements)
+router.post('/:agreementId/pay-rent', async (req, res) => {
+    try {
+        const { agreementId } = req.params;
+        
+        // Find the agreement
+        const agreement = await Agreement.findById(agreementId);
+        if (!agreement) {
+            return res.status(404).json({
+                success: false,
+                message: 'Agreement not found'
+            });
+        }
+
+        // Validate agreement type and user role
+        if (agreement.type !== 'Rental Agreement') {
+            return res.status(400).json({
+                success: false,
+                message: 'This is not a rental agreement'
+            });
+        }
+
+        // Check if user is the tenant (creator now instead of counterparty)
+        if (!agreement.creator.equals(req.user.userId)) {
+            return res.status(403).json({
+                success: false,
+                message: 'Only the tenant can pay rent'
+            });
+        }
+        
+        // Check if agreement is active
+        if (agreement.status !== "Active") {
+            return res.status(400).json({
+                success: false,
+                message: 'Agreement must be active for rent payment'
+            });
+        }
+
+        // Check if current date is within agreement period
+        const now = new Date();
+        if (now < new Date(agreement.startDate) || now > new Date(agreement.dueDate)) {
+            return res.status(400).json({
+                success: false,
+                message: 'Rent payment is outside the agreement period'
+            });
+        }
+
+        // Get authenticated wallet
+        const { web3, address, signTransaction } = await getUserWallet(req);
+        
+        const contract = new web3.eth.Contract(rentalContractABI, rentalContractAddress);
+        const amountInWei = web3.utils.toWei(agreement.amount.toString(), 'ether');
+
+        // Prepare transaction
+        const txData = {
+            from: address,
+            to: rentalContractAddress,
+            value: amountInWei,
+            data: contract.methods.payRent(agreement.blockchainId).encodeABI(),
+            gas: await contract.methods.payRent(agreement.blockchainId).estimateGas({ 
+                from: address, 
+                value: amountInWei 
+            })
+        };
+
+        // Sign and send transaction
+        const txReceipt = await signTransaction(txData);
+
+        // Update database - track payment history
+        // First get current payment count
+        const currentPaymentCount = agreement.paymentHistory ? agreement.paymentHistory.length : 0;
+        
+        await Agreement.updateOne(
+            { _id: agreementId },
+            { 
+                $push: { 
+                    paymentHistory: {
+                        amount: agreement.amount,
+                        date: new Date(),
+                        txHash: txReceipt.transactionHash,
+                        paymentNumber: currentPaymentCount + 1
+                    } 
+                },
+                totalPaid: (parseFloat(agreement.totalPaid || 0) + parseFloat(agreement.amount)).toString()
+            }
+        );
+
+        res.json({
+            success: true,
+            txHash: txReceipt.transactionHash
+        });
+
+    } catch (error) {
+        console.error('Rent payment error:', error);
+        const status = error.message.includes('expired') ? 401 : 500;
+        res.status(status).json({
+            success: false,
+            message: error.message.includes('expired')
+                ? 'Session expired. Please login again.'
+                : 'Rent payment failed: ' + error.message
+        });
+    }
+});
+
+// Pay Subscription Fee
+router.post('/:agreementId/pay-subscription', async (req, res) => {
+    try {
+        const { agreementId } = req.params;
+        
+        // Find the agreement
+        const agreement = await Agreement.findById(agreementId);
+        if (!agreement) {
+            return res.status(404).json({
+                success: false,
+                message: 'Agreement not found'
+            });
+        }
+
+        // Validate agreement type and user role
+        if (agreement.type !== 'Subscription Agreement') {
+            return res.status(400).json({
+                success: false,
+                message: 'This is not a subscription agreement'
+            });
+        }
+
+        // Check if user is the subscriber (creator now instead of counterparty)
+        if (!agreement.creator.equals(req.user.userId)) {
+            return res.status(403).json({
+                success: false,
+                message: 'Only the subscriber can pay subscription fees'
+            });
+        }
+        // Check if agreement is active
+        if (agreement.status !== "Active") {
+            return res.status(400).json({
+                success: false,
+                message: 'Subscription must be active for payment'
+            });
+        }
+
+        // Check if next billing date has been reached
+        if (new Date() < new Date(agreement.nextBillingDate)) {
+            return res.status(400).json({
+                success: false,
+                message: 'Next billing date has not been reached yet'
+            });
+        }
+
+        // Get authenticated wallet
+        const { web3, address, signTransaction } = await getUserWallet(req);
+        
+        const contract = new web3.eth.Contract(subscriptionContractABI, subscriptionContractAddress);
+        const amountInWei = web3.utils.toWei(agreement.amount.toString(), 'ether');
+
+        // Prepare transaction
+        const txData = {
+            from: address,
+            to: subscriptionContractAddress,
+            value: amountInWei,
+            data: contract.methods.paySubscriptionFee(agreement.blockchainId).encodeABI(),
+            gas: await contract.methods.paySubscriptionFee(agreement.blockchainId).estimateGas({ 
+                from: address, 
+                value: amountInWei 
+            })
+        };
+
+        // Sign and send transaction
+        const txReceipt = await signTransaction(txData);
+
+        // Calculate next billing date
+        const nextBillingDate = new Date();
+        nextBillingDate.setDate(nextBillingDate.getDate() + parseInt(agreement.billingInterval));
+
+        // Update database - track payment history and update next billing date
+        const currentPaymentCount = agreement.paymentHistory ? agreement.paymentHistory.length : 0;
+        const newTotalPaid = (parseFloat(agreement.totalPaid || 0) + parseFloat(agreement.amount)).toString();
+        
+        await Agreement.updateOne(
+            { _id: agreementId },
+            { 
+                $push: { 
+                    paymentHistory: {
+                        amount: agreement.amount,
+                        date: new Date(),
+                        txHash: txReceipt.transactionHash,
+                        paymentNumber: currentPaymentCount + 1
+                    } 
+                },
+                nextBillingDate: nextBillingDate,
+                totalPaid: newTotalPaid
+            }
+        );
+
+        res.json({
+            success: true,
+            txHash: txReceipt.transactionHash,
+            nextBillingDate
+        });
+
+    } catch (error) {
+        console.error('Subscription payment error:', error);
+        const status = error.message.includes('expired') ? 401 : 500;
+        res.status(status).json({
+            success: false,
+            message: error.message.includes('expired')
+                ? 'Session expired. Please login again.'
+                : 'Subscription payment failed: ' + error.message
+        });
+    }
+});
+
+// Cancel Subscription
+router.post('/:agreementId/cancel-subscription', async (req, res) => {
+    try {
+        const { agreementId } = req.params;
+        const agreement = await Agreement.findById(agreementId);
+        
+        // Validations
+        if (!agreement) {
+            return res.status(404).json({ success: false, message: 'Agreement not found' });
+        }
+        if (agreement.type !== 'Subscription Agreement') {
+            return res.status(400).json({ success: false, message: 'Invalid agreement type' });
+        }
+        if (!agreement.creator.equals(req.user.userId)) {
+            return res.status(403).json({ success: false, message: 'Only subscriber can cancel' });
+        }
+
+        const { web3, address, signTransaction } = await getUserWallet(req);
+        const contract = new web3.eth.Contract(subscriptionContractABI, subscriptionContractAddress);
+        
+        // Get subscription details
+        const subscription = await contract.methods.subscriptions(agreement.blockchainId).call();
+        
+        // IMPORTANT: Handle numeric status codes if your contract uses enum
+        const ACTIVE_STATUS = 1; // Change this based on your contract's enum
+        if (parseInt(subscription.status) !== ACTIVE_STATUS) {
+            return res.status(400).json({
+                success: false,
+                message: `Subscription status is not active (current: ${subscription.status})`
+            });
+        }
+
+        // Verify address match
+        if (address.toLowerCase() !== subscription.subscriber.toLowerCase()) {
+            return res.status(403).json({
+                success: false,
+                message: 'Wallet address mismatch with subscriber'
+            });
+        }
+
+        // Execute cancellation
+        const txData = {
+            from: address,
+            to: subscriptionContractAddress,
+            data: contract.methods.cancelSubscription(agreement.blockchainId).encodeABI(),
+            gas: await contract.methods.cancelSubscription(agreement.blockchainId)
+                .estimateGas({ from: address })
+        };
+
+        const txReceipt = await signTransaction(txData);
+
+        // Update database
+        await Agreement.updateOne(
+            { _id: agreementId },
+            { 
+                status: "Cancelled",
+                cancelledAt: new Date(),
+                cancelTxHash: txReceipt.transactionHash
+            }
+        );
+
+        res.json({ success: true, txHash: txReceipt.transactionHash });
+
+    } catch (error) {
+        console.error('Cancellation error:', error);
+        const status = error.message.includes('expired') ? 401 : 500;
+        res.status(status).json({
+            success: false,
+            message: error.message.includes('expired')
+                ? 'Session expired'
+                : `Cancellation failed: ${error.message}`
+        });
+    }
 });
 
 module.exports = router;
