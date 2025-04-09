@@ -32,6 +32,32 @@ const AgreementFlow = ({ onCreateAgreement, onCancel, userData }) => {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
   const [agreementId, setAgreementId] = useState(null);
+  const [ethToInrRate, setEthToInrRate] = useState(null);
+
+  useEffect(() => {
+    const fetchEthInrRate = async () => {
+      try {
+        // You can use CoinGecko or another API
+        const response = await axios.get('https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=inr');
+        if (response.data && response.data.ethereum && response.data.ethereum.inr) {
+          setEthToInrRate(response.data.ethereum.inr);
+        }
+      } catch (err) {
+        console.error("Failed to fetch ETH to INR rate:", err);
+        // Fallback to a default rate if API fails
+        setEthToInrRate(250000); // Example fallback value
+      }
+    };
+    
+    fetchEthInrRate();
+  }, []);
+
+  // Add this helper function inside the AgreementFlow component
+const calculateInrValue = (ethAmount) => {
+  if (!ethAmount || !ethToInrRate) return '';
+  const inrValue = parseFloat(ethAmount) * ethToInrRate;
+  return inrValue.toLocaleString('en-IN');
+};
 
   // Check authentication status on mount
   useEffect(() => {
@@ -437,6 +463,7 @@ const AgreementFlow = ({ onCreateAgreement, onCancel, userData }) => {
               />
               
               <label style={styles.label}>Security Deposit (ETH)</label>
+            <div style={styles.amountContainer}>
               <input
                 type="number"
                 name="securityDeposit"
@@ -447,6 +474,12 @@ const AgreementFlow = ({ onCreateAgreement, onCancel, userData }) => {
                 min="0"
                 required
               />
+              {details.securityDeposit && ethToInrRate && (
+                <div style={styles.inrValue}>
+                  ≈ ₹{calculateInrValue(details.securityDeposit)} INR
+                </div>
+              )}
+            </div>
             </>
           );
           
@@ -537,16 +570,23 @@ const AgreementFlow = ({ onCreateAgreement, onCancel, userData }) => {
           </div>
   
           <label style={styles.label}>Amount (ETH)</label>
-          <input
-            type="number"
-            name="amount"
-            value={details.amount}
-            onChange={handleChange}
-            style={styles.input}
-            step="0.0001"
-            min="0"
-            required
-          />
+          <div style={styles.amountContainer}>
+            <input
+              type="number"
+              name="amount"
+              value={details.amount}
+              onChange={handleChange}
+              style={styles.input}
+              step="0.0001"
+              min="0"
+              required
+            />
+            {details.amount && ethToInrRate && (
+              <div style={styles.inrValue}>
+                ≈ ₹{calculateInrValue(details.amount)} INR
+              </div>
+            )}
+          </div>
           
           {/* Render type-specific fields */}
           {renderTypeSpecificFields()}
@@ -642,6 +682,20 @@ const AgreementFlow = ({ onCreateAgreement, onCancel, userData }) => {
 
 // Updated Styles
 const styles = {
+  // Add these to your styles object
+amountContainer: {
+  position: 'relative',
+  width: '100%',
+},
+inrValue: {
+  position: 'absolute',
+  right: '10px',
+  top: '50%',
+  transform: 'translateY(-50%)',
+  color: '#666',
+  fontSize: '14px',
+  pointerEvents: 'none',
+},
   flowContainer: {
     marginTop: "30px",
     width: "80%",
