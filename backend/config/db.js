@@ -3,7 +3,7 @@ require('dotenv').config();
 
 const connectDB = async () => {
     try {
-        await mongoose.connect("mongodb+srv://savio:UjqK13PmTRQqww1W@smartpact.jt9gh.mongodb.net/?retryWrites=true&w=majority&appName=smartpact");
+        await mongoose.connect("");
         console.log('MongoDB connected successfully');
     } catch (error) {
         console.error('MongoDB connection error:', error.message);
